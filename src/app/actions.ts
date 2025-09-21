@@ -5,13 +5,14 @@ import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<style[^>]*>.*<\/style>/gs, "")
-    .replace(/<script[^>]*>.*<\/script>/gs, "")
-    .replace(/<!--.*?-->/gs, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Remove script and style elements
+  let cleanHtml = html.replace(/<script[^>]*>.*?<\/script>/gs, "");
+  cleanHtml = cleanHtml.replace(/<style[^>]*>.*?<\/style>/gs, "");
+  // Remove all HTML tags, leaving content
+  cleanHtml = cleanHtml.replace(/<[^>]+>/g, " ");
+  // Collapse whitespace
+  cleanHtml = cleanHtml.replace(/\s+/g, " ").trim();
+  return cleanHtml;
 }
 
 export async function processUrl(
