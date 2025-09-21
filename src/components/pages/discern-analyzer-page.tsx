@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl } from "@/app/actions";
-import { exportCsv, exportJson, parseCsv } from "@/lib/utils";
+import { exportCsv, exportJson, exportDocx, parseCsv } from "@/lib/utils";
 import type { AnalysisItem } from "@/lib/types";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -143,7 +143,7 @@ export function DiscernAnalyzerPage() {
     }
   };
 
-  const completedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing'), [items]);
+  const completedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing' && item.discernResult), [items]);
   
   return (
     <div className="flex flex-col min-h-screen font-sans">
@@ -218,11 +218,15 @@ export function DiscernAnalyzerPage() {
             <Card>
                 <CardHeader>
                   <CardTitle>3. Exportar Resultados</CardTitle>
-                  <CardDescription>Baixe os dados da análise em formato CSV ou JSON.</CardDescription>
+                  <CardDescription>Baixe os dados da análise em formato CSV, JSON ou DOCX.</CardDescription>
                 </CardHeader>
-                <CardContent className="grid grid-cols-2 gap-4">
-                    <Button variant="outline" onClick={() => exportCsv(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar CSV</Button>
-                    <Button variant="outline" onClick={() => exportJson(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar JSON</Button>
+                <CardContent className="space-y-2">
+                    <Button variant="outline" className="w-full" onClick={() => exportCsv(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar CSV</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportJson(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar JSON</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportDocx(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>
+                      <FileText className="mr-2 h-4 w-4"/>
+                      Exportar DOCX
+                    </Button>
                 </CardContent>
             </Card>
 
