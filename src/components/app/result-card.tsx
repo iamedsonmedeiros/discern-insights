@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { Copy, FileText, Info, Award, ListChecks, Star, Bot } from "lucide-react";
+import { Copy, FileText, Info, Award, ListChecks, Star, Bot, AlertCircle } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
