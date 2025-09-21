@@ -49,25 +49,37 @@ function escapeCsvField(field: any): string {
 export function exportCsv(data: AnalysisItem[], filename: string) {
   if (data.length === 0) return;
 
+  const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `item${String(i + 1).padStart(2, '0')}_score`);
+
   const headers = [
     'index', 'url', 'status', 'motivo', 'titulo',
     'score_geral', 'confiabilidade_avg', 'qualidade_tratamento_avg',
+    ...discernItemHeaders,
     'resumo_executivo', 'observacoes', 'recomendacoes'
   ];
   
-  const rows = data.map(item => [
-    escapeCsvField(item.index),
-    escapeCsvField(item.url),
-    escapeCsvField(item.status),
-    escapeCsvField(item.reason),
-    escapeCsvField(item.meta?.title),
-    escapeCsvField(item.discernResult?.domainAverages.score_geral),
-    escapeCsvField(item.discernResult?.domainAverages.confiabilidade),
-    escapeCsvField(item.discernResult?.domainAverages.qualidade_tratamento),
-    escapeCsvField(item.discernResult?.resumo),
-    escapeCsvField(item.discernResult?.observacoes),
-    escapeCsvField(item.discernResult?.recommmendacoes),
-  ].join(','));
+  const rows = data.map(item => {
+    const discernScores = discernItemHeaders.map(header => {
+        const key = header.replace('_score', '') as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
+        return escapeCsvField(item.discernResult?.scores?.[key]);
+    });
+
+    return [
+      escapeCsvField(item.index),
+      escapeCsvField(item.url),
+      escapeCsvField(item.status),
+      escapeCsvField(item.reason),
+      escapeCsvField(item.meta?.title),
+      escapeCsvField(item.discernResult?.domainAverages.score_geral),
+      escapeCsvField(item.discernResult?.domainAverages.confiabilidade),
+      escapeCsvField(item.discernResult?.domainAverages.qualidade_tratamento),
+      ...discernScores,
+      escapeCsvField(item.discernResult?.resumo),
+      escapeCsvField(item.discernResult?.observacoes),
+      escapeCsvField(item.discernResult?.recommmendacoes),
+    ].join(',');
+  });
+
 
   const csvString = [headers.join(','), ...rows].join('\n');
   const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
