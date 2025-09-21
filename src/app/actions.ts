@@ -1,0 +1,112 @@
+"use server";
+
+import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
+import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
+import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[^>]*>.*<\/style>/gs, "")
+    .replace(/<script[^>]*>.*<\/script>/gs, "")
+    .replace(/<!--.*?-->/gs, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export async function processUrl(
+  url: string
+): Promise<Pick<AnalysisItem, "status" | "reason" | "meta" | "discernResult">> {
+  let status: AnalysisStatus = "processing";
+  let reason: string | undefined;
+  let meta: AnalysisItem["meta"] = {};
+  let discernResult: AnalysisItem["discernResult"] | undefined;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(20000),
+    });
+
+    meta.httpStatus = response.status;
+
+    if (!response.ok) {
+      return {
+        status: "unavailable_offline",
+        reason: `Erro HTTP: ${response.status} ${response.statusText}`,
+        meta,
+      };
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/pdf")) {
+      return {
+        status: "not_eligible_pdf",
+        reason: "Conteúdo é um arquivo PDF.",
+        meta,
+      };
+    }
+
+    const html = await response.text();
+    meta.size = html.length;
+    
+    const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
+    meta.title = titleMatch ? titleMatch[1] : "Sem título";
+
+    if (html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html)) {
+      return {
+        status: "not_eligible_video",
+        reason: "Conteúdo parece ser um vídeo.",
+        meta,
+      };
+    }
+
+    let textContent = htmlToText(html);
+    
+    if (!textContent) {
+      return {
+        status: "scraping_error",
+        reason: "Não foi possível extrair conteúdo de texto da página.",
+        meta,
+      };
+    }
+
+    if (textContent.length > 30000) {
+      try {
+        const summaryResult = await summarizeLongContent({ text: textContent });
+        textContent = summaryResult.summary;
+      } catch (e) {
+        console.error("Summarization failed:", e);
+        // Continue with truncated content if summarization fails
+        textContent = textContent.substring(0, 30000);
+      }
+    }
+
+    try {
+      discernResult = await performDiscernAnalysis({ text: textContent });
+      status = "completed";
+    } catch (e) {
+      console.error("DISCERN analysis failed:", e);
+      status = "analysis_error";
+      reason =
+        e instanceof Error ? e.message : "Erro desconhecido durante a análise.";
+    }
+  } catch (error) {
+    status = "scraping_error";
+    if (error instanceof Error) {
+      if (error.name === "TimeoutError") {
+        reason = "A requisição excedeu o tempo limite de 20 segundos.";
+      } else {
+        reason = `Falha na extração: ${error.message}`;
+      }
+    } else {
+      reason = "Ocorreu um erro desconhecido na extração.";
+    }
+  }
+
+  return { status, reason, meta, discernResult };
+}
