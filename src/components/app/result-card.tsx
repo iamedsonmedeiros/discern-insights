@@ -10,6 +10,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
 import type { AnalysisItem } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 type ResultCardProps = {
   activeItem: AnalysisItem | null;
