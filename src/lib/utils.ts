@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { type AnalysisItem } from "./types";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
 
 
@@ -121,10 +121,10 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
     const doc = new Document({
         sections: [{
             properties: {},
-            children: data.flatMap(item => {
+            children: data.flatMap((item, index) => {
                 if (!item.discernResult) return [];
 
-                const children = [
+                const children: Paragraph[] = [
                     new Paragraph({
                         text: item.meta?.title || item.url,
                         heading: HeadingLevel.HEADING_1,
@@ -136,24 +136,23 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                     new Paragraph({ text: " " }),
 
                     new Paragraph({ text: "Métricas Principais", heading: HeadingLevel.HEADING_2 }),
-                    new Table({
-                        width: { size: 100, type: WidthType.PERCENTAGE },
-                        rows: [
-                            new TableRow({
-                                children: [
-                                    new TableCell({ children: [new Paragraph("Confiabilidade")], width: { size: 33, type: WidthType.PERCENTAGE } }),
-                                    new TableCell({ children: [new Paragraph("Qualidade do Tratamento")], width: { size: 33, type: WidthType.PERCENTAGE } }),
-                                    new TableCell({ children: [new Paragraph("Score Geral")], width: { size: 34, type: WidthType.PERCENTAGE } }),
-                                ],
-                            }),
-                            new TableRow({
-                                children: [
-                                    new TableCell({ children: [new Paragraph(item.discernResult.domainAverages.confiabilidade.toFixed(2))] }),
-                                    new TableCell({ children: [new Paragraph(item.discernResult.domainAverages.qualidade_tratamento.toFixed(2))] }),
-                                    new TableCell({ children: [new Paragraph(item.discernResult.domainAverages.score_geral.toFixed(2))] }),
-                                ],
-                            }),
-                        ],
+                    new Paragraph({
+                        children: [
+                            new TextRun({ text: "Confiabilidade: ", bold: true }),
+                            new TextRun(item.discernResult.domainAverages.confiabilidade.toFixed(2)),
+                        ]
+                    }),
+                    new Paragraph({
+                        children: [
+                            new TextRun({ text: "Qualidade do Tratamento: ", bold: true }),
+                            new TextRun(item.discernResult.domainAverages.qualidade_tratamento.toFixed(2)),
+                        ]
+                    }),
+                     new Paragraph({
+                        children: [
+                            new TextRun({ text: "Score Geral: ", bold: true }),
+                            new TextRun(item.discernResult.domainAverages.score_geral.toFixed(2)),
+                        ]
                     }),
                     new Paragraph({ text: " " }),
 
@@ -171,40 +170,30 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
 
                     new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
                 ];
-
-                const tableRows = Object.entries(item.discernResult.scores).map(([key, score]) => {
-                     return new TableRow({
+                
+                Object.entries(item.discernResult.scores).forEach(([key, score]) => {
+                    children.push(new Paragraph({
                         children: [
-                            new TableCell({
-                                children: [new Paragraph(discernQuestions[key] || key)],
-                                width: { size: 40, type: WidthType.PERCENTAGE },
-                            }),
-                            new TableCell({
-                                children: [new Paragraph(String(score))],
-                                width: { size: 10, type: WidthType.PERCENTAGE },
-                            }),
-                            new TableCell({
-                                children: [new Paragraph(item.discernResult!.justifications[key])],
-                                width: { size: 50, type: WidthType.PERCENTAGE },
-                            }),
-                        ],
-                    });
-                });
-                
-                const headerRow = new TableRow({
-                    children: [
-                        new TableCell({ children: [new Paragraph({ text: "Critério DISCERN", children: [new TextRun({ bold: true })]})] }),
-                        new TableCell({ children: [new Paragraph({ text: "Score", children: [new TextRun({ bold: true })]})] }),
-                        new TableCell({ children: [new Paragraph({ text: "Justificativa", children: [new TextRun({ bold: true })]})] }),
-                    ],
+                            new TextRun({ text: discernQuestions[key] || key, bold: true }),
+                        ]
+                    }));
+                    children.push(new Paragraph({
+                        children: [
+                            new TextRun({ text: `Score: ${score}/5`, bold: false }),
+                        ]
+                    }));
+                    children.push(new Paragraph({
+                        children: [
+                             new TextRun({ text: "Justificativa: ", bold: false, italics: true }),
+                             new TextRun({ text: item.discernResult!.justifications[key], italics: true }),
+                        ]
+                    }));
+                     children.push(new Paragraph({ text: " " }));
                 });
 
-                children.push(new Table({
-                    width: { size: 100, type: WidthType.PERCENTAGE },
-                    rows: [headerRow, ...tableRows]
-                }));
-                
-                children.push(new Paragraph({ text: " ", pageBreakBefore: true }));
+                if (index < data.length - 1) {
+                    children.push(new Paragraph({ text: "", pageBreakBefore: true }));
+                }
 
                 return children;
             }),
