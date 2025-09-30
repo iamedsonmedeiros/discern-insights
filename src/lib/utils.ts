@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { type AnalysisItem } from "./types";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Level, Indent, Numbering, AbstractNumbering } from 'docx';
 import { saveAs } from 'file-saver';
 
 
@@ -171,7 +171,7 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                     new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
                 ];
                 
-                Object.entries(item.discernResult.scores).forEach(([key, score]) => {
+                Object.entries(item.discernResult.scores).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, score]) => {
                     children.push(new Paragraph({
                         children: [
                             new TextRun({ text: discernQuestions[key] || key, bold: true }),
@@ -192,10 +192,77 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                 });
 
                 if (index < data.length - 1) {
-                    children.push(new Paragraph({ text: "", pageBreakBefore: true }));
+                    children.push(new Paragraph({ children: [new PageBreak()] }));
                 }
 
                 return children;
+            }),
+        }],
+    });
+
+    const blob = await Packer.toBlob(doc);
+    saveAs(blob, `${filename}.docx`);
+}
+
+
+function createSection(text: string): Paragraph[] {
+  const paragraphs: Paragraph[] = [];
+  const lines = text.split('\n');
+  let currentHeadingLevel: HeadingLevel | undefined = undefined;
+
+  for (const line of lines) {
+    if (line.startsWith('### ')) {
+      paragraphs.push(new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
+      currentHeadingLevel = HeadingLevel.HEADING_3;
+    } else if (line.startsWith('## ')) {
+      paragraphs.push(new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
+      currentHeadingLevel = HeadingLevel.HEADING_2;
+    } else if (line.startsWith('# ')) {
+      paragraphs.push(new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
+      currentHeadingLevel = HeadingLevel.HEADING_1;
+    } else if (line.trim() === '') {
+      paragraphs.push(new Paragraph({ text: '' }));
+    } else {
+        const isBold = line.startsWith('**') && line.endsWith('**');
+        const cleanLine = line.replace(/\*\*/g, '');
+        paragraphs.push(new Paragraph({ 
+            children: [new TextRun({ text: cleanLine, bold: isBold })],
+            spacing: { after: 100 }, 
+            alignment: AlignmentType.JUSTIFIED 
+        }));
+    }
+  }
+  return paragraphs;
+}
+
+
+export async function saveDocxFromContent(content: string, filename: string) {
+    const sections = content.split('---').map(s => s.trim());
+    const docChildren: Paragraph[] = sections.flatMap(section => createSection(section));
+
+    const doc = new Document({
+        styles: {
+            paragraph: {
+                run: {
+                    font: "Arial",
+                    size: 24, // 12pt
+                },
+            },
+        },
+        sections: [{
+             properties: {
+                page: {
+                    margin: {
+                        top: 1134, // ~2cm
+                        right: 1134,
+                        bottom: 1134,
+                        left: 1134,
+                    },
+                },
+            },
+            children: docChildren.map(p => {
+                p.properties.spacing = { line: 360, before: 0, after: 0 }; // Double spacing
+                return p;
             }),
         }],
     });

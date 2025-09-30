@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl } from "@/app/actions";
-import { exportCsv, exportJson, exportDocx, parseCsv } from "@/lib/utils";
+import { processUrl, generateArticleAction } from "@/app/actions";
+import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
 import type { AnalysisItem } from "@/lib/types";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,7 @@ export function DiscernAnalyzerPage() {
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoMode, setIsAutoMode] = useState(false);
+  const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const { toast } = useToast();
   const isProcessingRef = useRef(isProcessing);
@@ -145,6 +146,29 @@ export function DiscernAnalyzerPage() {
 
   const completedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing' && item.discernResult), [items]);
   
+  const handleGenerateArticle = async () => {
+    if (completedItems.length === 0) {
+      toast({ title: "Nenhum resultado", description: "Complete a análise de alguns sites para gerar o artigo." });
+      return;
+    }
+    setIsGeneratingArticle(true);
+    toast({ title: "Gerando artigo...", description: "A IA está criando o manuscrito. Isso pode levar um minuto." });
+    try {
+      const result = await generateArticleAction({ items: completedItems });
+      if (result.articleContent) {
+        saveDocxFromContent(result.articleContent, 'coloproctology_article');
+        toast({ title: "Artigo gerado!", description: "O download do seu manuscrito em .docx começará em breve." });
+      } else {
+        throw new Error("O conteúdo do artigo está vazio.");
+      }
+    } catch (error) {
+       toast({ title: "Erro na Geração", description: error instanceof Error ? error.message : "Não foi possível gerar o artigo.", variant: "destructive"});
+    } finally {
+       setIsGeneratingArticle(false);
+    }
+  };
+
+
   return (
     <div className="flex flex-col min-h-screen font-sans">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
@@ -226,6 +250,14 @@ export function DiscernAnalyzerPage() {
                     <Button variant="outline" className="w-full" onClick={() => exportDocx(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>
                       <FileText className="mr-2 h-4 w-4"/>
                       Exportar DOCX
+                    </Button>
+                    <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
+                      {isGeneratingArticle ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
+                      ) : (
+                        <BookMarked className="mr-2 h-4 w-4"/>
+                      )}
+                      {isGeneratingArticle ? 'Gerando...' : 'Criar Artigo'}
                     </Button>
                 </CardContent>
             </Card>

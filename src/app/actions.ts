@@ -2,17 +2,34 @@
 
 import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
 import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
+import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
 
 function htmlToText(html: string): string {
-  // Remove script and style elements
-  let cleanHtml = html.replace(/<script[^>]*>.*?<\/script>/gs, "");
-  cleanHtml = cleanHtml.replace(/<style[^>]*>.*?<\/style>/gs, "");
-  // Remove all HTML tags, leaving content
+  // Remove script, style, and head elements
+  let cleanHtml = html.replace(/<script[^>]*>.*?<\/script>/gis, "");
+  cleanHtml = cleanHtml.replace(/<style[^>]*>.*?<\/style>/gis, "");
+  cleanHtml = cleanHtml.replace(/<head[^>]*>.*?<\/head>/gis, "");
+  
+  // Convert block-level elements to newlines
+  cleanHtml = cleanHtml.replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, "\n");
+  
+  // Remove all remaining HTML tags
   cleanHtml = cleanHtml.replace(/<[^>]+>/g, " ");
-  // Collapse whitespace
-  cleanHtml = cleanHtml.replace(/\s+/g, " ").trim();
-  return cleanHtml;
+  
+  // Replace multiple newlines/spaces with a single one
+  cleanHtml = cleanHtml.replace(/(\s*\n\s*)+/g, "\n");
+  cleanHtml = cleanHtml.replace(/[ \t]+/g, " ");
+
+  // Decode HTML entities
+  cleanHtml = cleanHtml.replace(/&nbsp;/g, " ");
+  cleanHtml = cleanHtml.replace(/&amp;/g, "&");
+  cleanHtml = cleanHtml.replace(/&lt;/g, "<");
+  cleanHtml = cleanHtml.replace(/&gt;/g, ">");
+  cleanHtml = cleanHtml.replace(/&quot;/g, '"');
+  cleanHtml = cleanHtml.replace(/&#39;/g, "'");
+
+  return cleanHtml.trim();
 }
 
 export async function processUrl(
@@ -110,4 +127,15 @@ export async function processUrl(
   }
 
   return { status, reason, meta, discernResult };
+}
+
+
+export async function generateArticleAction({ items }: { items: AnalysisItem[] }) {
+  try {
+    const result = await createScientificArticle({ items });
+    return result;
+  } catch (error) {
+    console.error("Article generation failed:", error);
+    throw new Error("A IA não conseguiu gerar o artigo.");
+  }
 }
