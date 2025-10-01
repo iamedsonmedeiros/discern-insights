@@ -113,6 +113,8 @@ The core of the evaluation was performed by an AI agent trained to apply the DIS
 
 The analysis was conducted between [Mês/Ano] and [Mês/Ano]. Data extracted included the 16 individual scores, justifications, domain averages, and a qualitative summary for each website. Statistical analysis was descriptive, focusing on mean scores and standard deviations for each DISCERN item and domain across all evaluated websites.
 
+**Ethical Considerations:** This study analyzed publicly available information and did not involve human participants. Therefore, approval from an ethics committee was not required, in accordance with the Declaration of Helsinki.
+
 ---
 
 # Results
@@ -121,7 +123,7 @@ The analysis was conducted between [Mês/Ano] and [Mês/Ano]. Data extracted inc
 
 [Detalhe os resultados por critério. "The highest-scoring criteria were [critério com maior pontuação] (mean score: X.XX) and [outro critério] (mean score: Y.YY). Conversely, the areas with the most significant quality gaps were [critério com menor pontuação] (mean score: A.AA) and [outro critério] (mean score: B.BB), indicating a general failure to discuss treatment uncertainties and risks." Use os dados para suportar essas afirmações.]
 
-[Pode sugerir a inclusão de uma tabela ou figura para visualização dos dados, ex: "(See Table 1 for a detailed breakdown of scores per DISCERN item)."]
+[**OBRIGATÓRIO:** Sugira a inclusão de uma tabela ou figura para visualização dos dados, ex: "(See Table 1 for a detailed breakdown of scores per DISCERN item)."]
 
 ---
 
@@ -154,6 +156,8 @@ The authors declare no conflicts of interest.
 ---
 
 # References
+
+[**OBRIGATÓRIO:** Insira aqui de 3 a 5 referências relevantes em formato Vancouver. Inclua obrigatoriamente a referência do DISCERN.]
 
 1. Charnock D, Shepperd S, Needham G, Gann R. DISCERN: an instrument for judging the quality of written consumer health information on treatment choices. J Epidemiol Community Health. 1999;53(2):105-11.
 2. [Placeholder para outra referência relevante, ex: um estudo sobre uso da internet por pacientes]
