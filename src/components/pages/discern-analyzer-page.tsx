@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl, generateArticleAction } from "@/app/actions";
 import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
@@ -25,6 +25,7 @@ export function DiscernAnalyzerPage() {
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [notificationPermission, setNotificationPermission] = useState("default");
   const { toast } = useToast();
   const isProcessingRef = useRef(isProcessing);
   const isAutoModeRef = useRef(isAutoMode);
@@ -34,15 +35,32 @@ export function DiscernAnalyzerPage() {
     isAutoModeRef.current = isAutoMode;
   }, [isProcessing, isAutoMode]);
   
+  useEffect(() => {
+    if ("Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
   const activeItem = useMemo(
     () => items.find((item) => item.id === activeItemId) || null,
     [items, activeItemId]
   );
+  
+  const showCompletionNotification = useCallback(() => {
+    if (notificationPermission === "granted") {
+      new Notification("Análise Concluída!", {
+        body: `Todos os ${items.length} sites foram processados.`,
+        icon: "/favicon.ico",
+      });
+    } else {
+       toast({ title: "Análise concluída", description: "Todos os sites da fila foram processados." });
+    }
+  }, [notificationPermission, items.length, toast]);
 
   const processSingleItem = useCallback(async (index: number) => {
     if (index >= items.length) {
       setIsProcessing(false);
-      toast({ title: "Análise concluída", description: "Todos os sites da fila foram processados." });
+      showCompletionNotification();
       return;
     }
 
@@ -67,7 +85,7 @@ export function DiscernAnalyzerPage() {
           : item
       )
     );
-  }, [items, toast]);
+  }, [items, showCompletionNotification]);
 
 
   useEffect(() => {
@@ -78,10 +96,10 @@ export function DiscernAnalyzerPage() {
         processSingleItem(nextIndex);
       } else {
         setIsProcessing(false);
-        toast({ title: "Análise concluída", description: "Todos os sites da fila foram processados." });
+        showCompletionNotification();
       }
     }
-  }, [items, currentIndex, processSingleItem, toast]);
+  }, [items, currentIndex, processSingleItem, showCompletionNotification]);
 
   const handleTextareaImport = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -126,12 +144,33 @@ export function DiscernAnalyzerPage() {
     setItems((prev) => [...prev, ...newItems]);
     toast({ title: `${newItems.length} URLs importadas`, description: "A fila de análise foi atualizada." });
   };
+
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) {
+      toast({ title: "Navegador não suporta notificações", variant: "destructive" });
+      return "denied";
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission === "granted") {
+      toast({ title: "Notificações ativadas!", description: "Você será avisado quando a análise terminar."});
+    }
+    return permission;
+  }
   
-  const handleStartProcessing = () => {
+  const handleStartProcessing = async () => {
     if (items.length === 0) {
       toast({ title: "Fila vazia", description: "Importe URLs para iniciar a análise."});
       return;
     }
+
+    if (notificationPermission === 'default') {
+       const permission = await requestNotificationPermission();
+       if(permission !== 'granted') {
+           toast({ title: "Permissão de notificação necessária", description: "Ative as notificações para ser avisado.", variant: "destructive"});
+       }
+    }
+
     setIsProcessing(true);
     processSingleItem(currentIndex);
   };
@@ -177,6 +216,12 @@ export function DiscernAnalyzerPage() {
             <h1 className="text-2xl font-bold text-primary">DISCERN Insights</h1>
             <p className="text-muted-foreground">Analise a qualidade de informações de saúde com IA.</p>
           </div>
+          {notificationPermission !== 'granted' && (
+            <Button variant="outline" size="sm" onClick={requestNotificationPermission}>
+                <Bell className="mr-2 h-4 w-4" />
+                Ativar Notificações
+            </Button>
+          )}
         </div>
       </header>
 
