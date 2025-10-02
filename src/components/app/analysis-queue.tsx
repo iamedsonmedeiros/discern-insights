@@ -7,25 +7,22 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
+import { useI18n } from "@/components/i18n/use-i18n";
+import type { TranslationKey } from "../i18n/translations";
 
-type AnalysisQueueProps = {
-  items: AnalysisItem[];
-  activeItemId: string | null;
-  onRowClick: (id: string) => void;
-};
 
 const statusConfig: Record<
   AnalysisStatus,
-  { text: string; icon: React.ReactNode; badgeVariant: "default" | "secondary" | "destructive" | "outline" }
+  { textKey: TranslationKey; icon: React.ReactNode; badgeVariant: "default" | "secondary" | "destructive" | "outline" }
 > = {
-  pending: { text: "Pendente", icon: <Clock className="h-4 w-4 text-muted-foreground" />, badgeVariant: "outline" },
-  processing: { text: "Processando", icon: <Loader className="h-4 w-4 animate-spin text-blue-500" />, badgeVariant: "default" },
-  completed: { text: "Concluído", icon: <CheckCircle2 className="h-4 w-4 text-green-500" />, badgeVariant: "secondary" },
-  not_eligible_pdf: { text: "PDF", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
-  not_eligible_video: { text: "Vídeo", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
-  unavailable_offline: { text: "Offline", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
-  scraping_error: { text: "Erro Extração", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
-  analysis_error: { text: "Erro Análise", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
+  pending: { textKey: "status.pending", icon: <Clock className="h-4 w-4 text-muted-foreground" />, badgeVariant: "outline" },
+  processing: { textKey: "status.processing", icon: <Loader className="h-4 w-4 animate-spin text-blue-500" />, badgeVariant: "default" },
+  completed: { textKey: "status.completed", icon: <CheckCircle2 className="h-4 w-4 text-green-500" />, badgeVariant: "secondary" },
+  not_eligible_pdf: { textKey: "status.not_eligible_pdf", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
+  not_eligible_video: { textKey: "status.not_eligible_video", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
+  unavailable_offline: { textKey: "status.unavailable_offline", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
+  scraping_error: { textKey: "status.scraping_error", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
+  analysis_error: { textKey: "status.analysis_error", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
 };
 
 const ScoreBadge = ({ score }: { score: number | undefined }) => {
@@ -40,12 +37,14 @@ const ScoreBadge = ({ score }: { score: number | undefined }) => {
 };
 
 export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueueProps) {
+  const { t } = useI18n();
+
   return (
     <Card className="h-full">
       <CardHeader>
-        <CardTitle>Fila de Processamento</CardTitle>
+        <CardTitle>{t('queue.title')}</CardTitle>
         <CardDescription>
-          {items.length > 0 ? `Mostrando ${items.length} site(s) na fila.` : "Importe URLs para começar."}
+          {items.length > 0 ? t('queue.description.showing', {count: items.length}) : t('queue.description.empty')}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -54,9 +53,9 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
             <TableHeader className="sticky top-0 bg-background">
               <TableRow>
                 <TableHead className="w-[50px]">#</TableHead>
-                <TableHead>URL</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Score</TableHead>
+                <TableHead>{t('queue.table.url')}</TableHead>
+                <TableHead>{t('queue.table.status')}</TableHead>
+                <TableHead className="text-right">{t('queue.table.score')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -72,7 +71,7 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
                     <TableCell>
                       <Badge variant={statusConfig[item.status].badgeVariant} className="flex items-center gap-2">
                         {statusConfig[item.status].icon}
-                        <span>{statusConfig[item.status].text}</span>
+                        <span>{t(statusConfig[item.status].textKey)}</span>
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
@@ -83,7 +82,7 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
               ) : (
                 <TableRow>
                   <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
-                    Nenhum site na fila.
+                    {t('queue.empty')}
                   </TableCell>
                 </TableRow>
               )}
