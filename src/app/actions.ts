@@ -33,7 +33,8 @@ function htmlToText(html: string): string {
 }
 
 export async function processUrl(
-  url: string
+  url: string,
+  language: string = 'pt-BR'
 ): Promise<Pick<AnalysisItem, "status" | "reason" | "meta" | "discernResult">> {
   let status: AnalysisStatus = "processing";
   let reason: string | undefined;
@@ -55,7 +56,7 @@ export async function processUrl(
     if (!response.ok) {
       return {
         status: "unavailable_offline",
-        reason: `Erro HTTP: ${response.status} ${response.statusText}`,
+        reason: `HTTP Error: ${response.status} ${response.statusText}`,
         meta,
       };
     }
@@ -64,7 +65,7 @@ export async function processUrl(
     if (contentType.includes("application/pdf")) {
       return {
         status: "not_eligible_pdf",
-        reason: "DISCERN não analisa PDFs",
+        reason: "DISCERN does not analyze PDFs",
         meta,
       };
     }
@@ -73,12 +74,12 @@ export async function processUrl(
     meta.size = html.length;
     
     const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
-    meta.title = titleMatch ? titleMatch[1] : "Sem título";
+    meta.title = titleMatch ? titleMatch[1] : "No title";
 
     if (html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html)) {
       return {
         status: "not_eligible_video",
-        reason: "DISCERN não analisa vídeos",
+        reason: "DISCERN does not analyze videos",
         meta,
       };
     }
@@ -88,14 +89,14 @@ export async function processUrl(
     if (!textContent) {
       return {
         status: "scraping_error",
-        reason: "Não foi possível extrair conteúdo de texto da página.",
+        reason: "Could not extract text content from the page.",
         meta,
       };
     }
 
     if (textContent.length > 30000) {
       try {
-        const summaryResult = await summarizeLongContent({ text: textContent });
+        const summaryResult = await summarizeLongContent({ text: textContent, language });
         textContent = summaryResult.summary;
       } catch (e) {
         console.error("Summarization failed:", e);
@@ -105,24 +106,24 @@ export async function processUrl(
     }
 
     try {
-      discernResult = await performDiscernAnalysis({ text: textContent });
+      discernResult = await performDiscernAnalysis({ text: textContent, language });
       status = "completed";
     } catch (e) {
       console.error("DISCERN analysis failed:", e);
       status = "analysis_error";
       reason =
-        e instanceof Error ? e.message : "Erro desconhecido durante a análise.";
+        e instanceof Error ? e.message : "Unknown error during analysis.";
     }
   } catch (error) {
     status = "scraping_error";
     if (error instanceof Error) {
       if (error.name === "TimeoutError" || error.name === 'AbortError') {
-        reason = "A requisição excedeu o tempo limite de 20 segundos.";
+        reason = "The request timed out after 20 seconds.";
       } else {
-        reason = `Falha na extração: ${error.message}`;
+        reason = `Extraction failed: ${error.message}`;
       }
     } else {
-      reason = "Ocorreu um erro desconhecido na extração.";
+      reason = "An unknown extraction error occurred.";
     }
   }
 
@@ -136,6 +137,6 @@ export async function generateArticleAction({ items }: { items: AnalysisItem[] }
     return result;
   } catch (error) {
     console.error("Article generation failed:", error);
-    throw new Error("A IA não conseguiu gerar o artigo.");
+    throw new Error("The AI failed to generate the article.");
   }
 }

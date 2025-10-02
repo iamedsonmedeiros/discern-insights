@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Languages } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl, generateArticleAction } from "@/app/actions";
 import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
@@ -17,8 +17,10 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { AnalysisQueue } from "@/components/app/analysis-queue";
 import { ResultCard } from "@/components/app/result-card";
+import { useI18n } from "@/components/i18n/use-i18n";
 
 export function DiscernAnalyzerPage() {
+  const { t, setLocale, locale } = useI18n();
   const [items, setItems] = useState<AnalysisItem[]>([]);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -48,14 +50,14 @@ export function DiscernAnalyzerPage() {
   
   const showCompletionNotification = useCallback(() => {
     if (notificationPermission === "granted") {
-      new Notification("Análise Concluída!", {
-        body: `Todos os ${items.length} sites foram processados.`,
+      new Notification(t('analysisComplete.title'), {
+        body: t('analysisComplete.body', { count: items.length }),
         icon: "/favicon.ico",
       });
     } else {
-       toast({ title: "Análise concluída", description: "Todos os sites da fila foram processados." });
+       toast({ title: t('analysisComplete.title'), description: t('analysisComplete.body', { count: items.length }) });
     }
-  }, [notificationPermission, items.length, toast]);
+  }, [notificationPermission, items.length, toast, t]);
 
   const processSingleItem = useCallback(async (index: number) => {
     if (index >= items.length) {
@@ -76,7 +78,7 @@ export function DiscernAnalyzerPage() {
       )
     );
 
-    const result = await processUrl(itemToProcess.url);
+    const result = await processUrl(itemToProcess.url, locale);
 
     setItems((prev) =>
       prev.map((item) =>
@@ -85,7 +87,7 @@ export function DiscernAnalyzerPage() {
           : item
       )
     );
-  }, [items, showCompletionNotification]);
+  }, [items, showCompletionNotification, locale]);
 
 
   useEffect(() => {
@@ -126,8 +128,8 @@ export function DiscernAnalyzerPage() {
     const uniqueUrls = [...new Set(urls)];
     if (uniqueUrls.length > 200) {
       toast({
-        title: "Limite excedido",
-        description: "É possível importar no máximo 200 URLs por vez.",
+        title: t('importLimit.title'),
+        description: t('importLimit.description'),
         variant: "destructive",
       });
       return;
@@ -142,32 +144,32 @@ export function DiscernAnalyzerPage() {
     }));
 
     setItems((prev) => [...prev, ...newItems]);
-    toast({ title: `${newItems.length} URLs importadas`, description: "A fila de análise foi atualizada." });
+    toast({ title: t('importSuccess.title', { count: newItems.length }), description: t('importSuccess.description') });
   };
 
   const requestNotificationPermission = async () => {
     if (!("Notification" in window)) {
-      toast({ title: "Navegador não suporta notificações", variant: "destructive" });
+      toast({ title: t('notifications.notSupported'), variant: "destructive" });
       return "denied";
     }
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
     if (permission === "granted") {
-      toast({ title: "Notificações ativadas!", description: "Você será avisado quando a análise terminar."});
+      toast({ title: t('notifications.activatedTitle'), description: t('notifications.activatedBody')});
     }
     return permission;
   }
   
   const handleStartProcessing = async () => {
     if (items.length === 0) {
-      toast({ title: "Fila vazia", description: "Importe URLs para iniciar a análise."});
+      toast({ title: t('queue.emptyTitle'), description: t('queue.emptyDescription')});
       return;
     }
 
     if (notificationPermission === 'default') {
        const permission = await requestNotificationPermission();
        if(permission !== 'granted') {
-           toast({ title: "Permissão de notificação necessária", description: "Ative as notificações para ser avisado.", variant: "destructive"});
+           toast({ title: t('notifications.permissionNeededTitle'), description: t('notifications.permissionNeededBody'), variant: "destructive"});
        }
     }
 
@@ -179,7 +181,7 @@ export function DiscernAnalyzerPage() {
     if (currentIndex + 1 < items.length) {
       processSingleItem(currentIndex + 1);
     } else {
-      toast({ title: "Fim da fila", description: "Não há mais itens para processar." });
+      toast({ title: t('queue.endTitle'), description: t('queue.endDescription') });
     }
   };
 
@@ -187,26 +189,25 @@ export function DiscernAnalyzerPage() {
   
   const handleGenerateArticle = async () => {
     if (completedItems.length === 0) {
-      toast({ title: "Nenhum resultado", description: "Complete a análise de alguns sites para gerar o artigo." });
+      toast({ title: t('article.noResultsTitle'), description: t('article.noResultsDescription') });
       return;
     }
     setIsGeneratingArticle(true);
-    toast({ title: "Gerando artigo...", description: "A IA está criando o manuscrito. Isso pode levar um minuto." });
+    toast({ title: t('article.generatingTitle'), description: t('article.generatingDescription') });
     try {
       const result = await generateArticleAction({ items: completedItems });
       if (result.articleContent) {
         saveDocxFromContent(result.articleContent, 'coloproctology_article');
-        toast({ title: "Artigo gerado!", description: "O download do seu manuscrito em .docx começará em breve." });
+        toast({ title: t('article.generatedTitle'), description: t('article.generatedDescription') });
       } else {
-        throw new Error("O conteúdo do artigo está vazio.");
+        throw new Error(t('article.emptyError'));
       }
     } catch (error) {
-       toast({ title: "Erro na Geração", description: error instanceof Error ? error.message : "Não foi possível gerar o artigo.", variant: "destructive"});
+       toast({ title: t('article.errorTitle'), description: error instanceof Error ? error.message : t('article.unknownError'), variant: "destructive"});
     } finally {
        setIsGeneratingArticle(false);
     }
   };
-
 
   return (
     <div className="flex flex-col min-h-screen font-sans">
@@ -214,14 +215,20 @@ export function DiscernAnalyzerPage() {
         <div className="container mx-auto flex items-center justify-between p-4">
           <div>
             <h1 className="text-2xl font-bold text-primary">DISCERN Insights</h1>
-            <p className="text-muted-foreground">Analise a qualidade de informações de saúde com IA.</p>
+            <p className="text-muted-foreground">{t('app.subtitle')}</p>
           </div>
-          {notificationPermission !== 'granted' && (
-            <Button variant="outline" size="sm" onClick={requestNotificationPermission}>
-                <Bell className="mr-2 h-4 w-4" />
-                Ativar Notificações
-            </Button>
-          )}
+          <div className="flex items-center gap-4">
+            {notificationPermission !== 'granted' && (
+              <Button variant="outline" size="sm" onClick={requestNotificationPermission}>
+                  <Bell className="mr-2 h-4 w-4" />
+                  {t('controls.activateNotifications')}
+              </Button>
+            )}
+             <div className="flex items-center gap-2">
+                <Button variant={locale === 'pt-BR' ? 'default' : 'outline'} size="sm" onClick={() => setLocale('pt-BR')}>PT</Button>
+                <Button variant={locale === 'en' ? 'default' : 'outline'} size="sm" onClick={() => setLocale('en')}>EN</Button>
+             </div>
+          </div>
         </div>
       </header>
 
@@ -230,24 +237,24 @@ export function DiscernAnalyzerPage() {
           <div className="lg:col-span-1 flex flex-col gap-8">
             <Card>
               <CardHeader>
-                <CardTitle>1. Importar URLs</CardTitle>
-                <CardDescription>Cole uma lista de URLs ou envie um arquivo CSV.</CardDescription>
+                <CardTitle>{t('import.title')}</CardTitle>
+                <CardDescription>{t('import.description')}</CardDescription>
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue="paste">
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="paste"><LinkIcon className="mr-2 h-4 w-4"/> Colar</TabsTrigger>
-                    <TabsTrigger value="upload"><FileUp className="mr-2 h-4 w-4"/> Enviar</TabsTrigger>
+                    <TabsTrigger value="paste"><LinkIcon className="mr-2 h-4 w-4"/> {t('import.paste')}</TabsTrigger>
+                    <TabsTrigger value="upload"><FileUp className="mr-2 h-4 w-4"/> {t('import.upload')}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="paste" className="mt-4">
                     <form onSubmit={handleTextareaImport}>
-                      <Textarea name="urls" placeholder="https://exemplo.com/artigo1&#10;https://outroexemplo.net/info" rows={6} />
-                      <Button type="submit" className="mt-4 w-full">Importar URLs</Button>
+                      <Textarea name="urls" placeholder={t('import.placeholder')} rows={6} />
+                      <Button type="submit" className="mt-4 w-full">{t('import.button')}</Button>
                     </form>
                   </TabsContent>
                   <TabsContent value="upload" className="mt-4">
                     <Input id="csv-upload" type="file" accept=".csv" onChange={handleFileImport} />
-                    <p className="text-xs text-muted-foreground mt-2">O arquivo CSV deve conter uma coluna chamada &quot;url&quot;.</p>
+                    <p className="text-xs text-muted-foreground mt-2">{t('import.csvHint')}</p>
                   </TabsContent>
                 </Tabs>
               </CardContent>
@@ -255,30 +262,30 @@ export function DiscernAnalyzerPage() {
 
             <Card>
                 <CardHeader>
-                  <CardTitle>2. Controlar Análise</CardTitle>
-                  <CardDescription>Inicie, pause e controle o fluxo de processamento.</CardDescription>
+                  <CardTitle>{t('controls.title')}</CardTitle>
+                  <CardDescription>{t('controls.description')}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                     <div className="flex items-center justify-between">
                       <Label htmlFor="auto-mode" className="flex flex-col space-y-1">
-                        <span>Modo Automático</span>
+                        <span>{t('controls.autoMode')}</span>
                         <span className="font-normal leading-snug text-muted-foreground">
-                          Processa todos os sites em sequência.
+                          {t('controls.autoModeDescription')}
                         </span>
                       </Label>
                       <Switch id="auto-mode" checked={isAutoMode} onCheckedChange={setIsAutoMode} />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       {isProcessing ? (
-                        <Button variant="outline" onClick={() => setIsProcessing(false)}><Pause className="mr-2 h-4 w-4"/> Pausar</Button>
+                        <Button variant="outline" onClick={() => setIsProcessing(false)}><Pause className="mr-2 h-4 w-4"/> {t('controls.pause')}</Button>
                       ) : (
                         <Button onClick={handleStartProcessing} disabled={items.length === 0}>
-                          {items.some(i => i.status !== 'pending') ? <Play className="mr-2 h-4 w-4"/> : <Play className="mr-2 h-4 w-4"/>}
-                          {currentIndex > 0 ? 'Continuar' : 'Iniciar'}
+                          <Play className="mr-2 h-4 w-4"/>
+                          {currentIndex > 0 ? t('controls.continue') : t('controls.start')}
                         </Button>
                       )}
                       <Button onClick={handleNext} disabled={isProcessing && isAutoMode || items.length === 0 || currentIndex >= items.length - 1}>
-                        <SkipForward className="mr-2 h-4 w-4"/> Próximo
+                        <SkipForward className="mr-2 h-4 w-4"/> {t('controls.next')}
                       </Button>
                     </div>
                 </CardContent>
@@ -286,15 +293,15 @@ export function DiscernAnalyzerPage() {
 
             <Card>
                 <CardHeader>
-                  <CardTitle>3. Exportar Resultados</CardTitle>
-                  <CardDescription>Baixe os dados da análise em formato CSV, JSON ou DOCX.</CardDescription>
+                  <CardTitle>{t('export.title')}</CardTitle>
+                  <CardDescription>{t('export.description')}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                    <Button variant="outline" className="w-full" onClick={() => exportCsv(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar CSV</Button>
-                    <Button variant="outline" className="w-full" onClick={() => exportJson(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>Exportar JSON</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportCsv(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>{t('export.csv')}</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportJson(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>{t('export.json')}</Button>
                     <Button variant="outline" className="w-full" onClick={() => exportDocx(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>
                       <FileText className="mr-2 h-4 w-4"/>
-                      Exportar DOCX
+                      {t('export.docx')}
                     </Button>
                     <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
                       {isGeneratingArticle ? (
@@ -302,11 +309,10 @@ export function DiscernAnalyzerPage() {
                       ) : (
                         <BookMarked className="mr-2 h-4 w-4"/>
                       )}
-                      {isGeneratingArticle ? 'Gerando...' : 'Criar Artigo'}
+                      {isGeneratingArticle ? t('article.generating') : t('article.create')}
                     </Button>
                 </CardContent>
             </Card>
-
           </div>
 
           <div className="lg:col-span-2 flex flex-col gap-8">

@@ -14,6 +14,7 @@ import {z} from 'genkit';
 
 const PerformDiscernAnalysisInputSchema = z.object({
   text: z.string().describe('The text content extracted from the website to be analyzed.'),
+  language: z.string().describe('The language of the analysis output (e.g., "pt-BR" or "en").'),
 });
 export type PerformDiscernAnalysisInput = z.infer<typeof PerformDiscernAnalysisInputSchema>;
 
@@ -86,16 +87,16 @@ const discernAnalystPrompt = ai.definePrompt({
   name: 'discernAnalystPrompt',
   input: {schema: PerformDiscernAnalysisInputSchema},
   output: {schema: PerformDiscernAnalysisOutputSchema},
-  prompt: `Você é um avaliador rigoroso do DISCERN (Universidade de Oxford) para qualidade de informação sobre tratamentos de saúde.
-	•	Use escala 1–5 por item.
-	•	Itens 1–8: confiabilidade.
-	•	Itens 9–15: qualidade das opções de tratamento.
-	•	Item 16: qualidade global.
-	•	Avalie apenas conteúdo em texto.
-	•	Se o texto não tratar de opções de tratamento, explique e atribua notas baixas nos itens correspondentes.
-	•	Responda sempre em português do Brasil.
+  prompt: `You are a rigorous DISCERN (University of Oxford) evaluator for the quality of health information.
+	• Use a 1–5 scale per item.
+	• Items 1–8: reliability.
+	• Items 9–15: quality of treatment options.
+	• Item 16: overall quality.
+	• Evaluate only text content.
+	• If the text does not discuss treatment options, explain this and assign low scores to the corresponding items.
+	• Always respond in the language specified: {{{language}}}.
 
-  Analise o seguinte texto:
+  Analyze the following text:
   {{{text}}}
 `,
   config: {

@@ -13,6 +13,7 @@ import {z} from 'genkit';
 
 const SummarizeLongContentInputSchema = z.object({
   text: z.string().describe('The long text content to summarize.'),
+  language: z.string().describe('The language for the summary (e.g., "pt-BR" or "en").'),
 });
 export type SummarizeLongContentInput = z.infer<typeof SummarizeLongContentInputSchema>;
 
@@ -31,7 +32,7 @@ const prompt = ai.definePrompt({
   output: {schema: SummarizeLongContentOutputSchema},
   prompt: `You are an expert summarizer, skilled at condensing long text into a concise and informative summary.
 
-  Please summarize the following text, focusing on the key information related to treatment options, risks, and sources. The summary should be in Portuguese.
+  Please summarize the following text, focusing on the key information related to treatment options, risks, and sources. The summary should be in the specified language: {{{language}}}.
 
   Text: {{{text}}}`,
 });
