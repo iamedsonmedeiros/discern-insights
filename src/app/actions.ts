@@ -116,7 +116,7 @@ export async function processUrl(
   } catch (error) {
     status = "scraping_error";
     if (error instanceof Error) {
-      if (error.name === "TimeoutError") {
+      if (error.name === "TimeoutError" || error.name === 'AbortError') {
         reason = "A requisição excedeu o tempo limite de 20 segundos.";
       } else {
         reason = `Falha na extração: ${error.message}`;
