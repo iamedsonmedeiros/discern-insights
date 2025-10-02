@@ -64,7 +64,7 @@ export async function processUrl(
     if (contentType.includes("application/pdf")) {
       return {
         status: "not_eligible_pdf",
-        reason: "Conteúdo é um arquivo PDF.",
+        reason: "DISCERN não analisa PDFs",
         meta,
       };
     }
@@ -78,7 +78,7 @@ export async function processUrl(
     if (html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html)) {
       return {
         status: "not_eligible_video",
-        reason: "Conteúdo parece ser um vídeo.",
+        reason: "DISCERN não analisa vídeos",
         meta,
       };
     }
