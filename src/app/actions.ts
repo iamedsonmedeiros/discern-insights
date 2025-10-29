@@ -40,6 +40,8 @@ export async function processUrl(
   let reason: string | undefined;
   let meta: AnalysisItem["meta"] = {};
   let discernResult: AnalysisItem["discernResult"] | undefined;
+  const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
+
 
   try {
     const response = await fetch(url, {
@@ -76,7 +78,10 @@ export async function processUrl(
     const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
     meta.title = titleMatch ? titleMatch[1] : "No title";
 
-    if (html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html)) {
+    let textContent = htmlToText(html);
+    
+    const hasVideo = html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html);
+    if (hasVideo && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
       return {
         status: "not_eligible_video",
         reason: "DISCERN does not analyze videos",
@@ -84,8 +89,6 @@ export async function processUrl(
       };
     }
 
-    let textContent = htmlToText(html);
-    
     if (!textContent) {
       return {
         status: "scraping_error",
