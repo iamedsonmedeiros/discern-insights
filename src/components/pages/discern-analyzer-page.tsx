@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Languages } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl, generateArticleAction } from "@/app/actions";
 import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
@@ -176,6 +176,18 @@ export function DiscernAnalyzerPage() {
     setIsProcessing(true);
     processSingleItem(currentIndex);
   };
+  
+  const handlePauseProcessing = () => {
+    setIsProcessing(false);
+  };
+
+  const handleStopProcessing = () => {
+    setIsProcessing(false);
+    setCurrentIndex(0);
+    setItems(items.map(item => ({...item, status: 'pending'})));
+    setActiveItemId(null);
+  };
+
 
   const handleNext = () => {
     if (currentIndex + 1 < items.length) {
@@ -208,6 +220,12 @@ export function DiscernAnalyzerPage() {
        setIsGeneratingArticle(false);
     }
   };
+
+  const getStartButtonText = () => {
+      if (isProcessing) return t('controls.pause');
+      if (currentIndex > 0) return t('controls.continue');
+      return t('controls.start');
+  }
 
   return (
     <div className="flex flex-col min-h-screen font-sans">
@@ -275,15 +293,14 @@ export function DiscernAnalyzerPage() {
                       </Label>
                       <Switch id="auto-mode" checked={isAutoMode} onCheckedChange={setIsAutoMode} />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      {isProcessing ? (
-                        <Button variant="outline" onClick={() => setIsProcessing(false)}><Pause className="mr-2 h-4 w-4"/> {t('controls.pause')}</Button>
-                      ) : (
-                        <Button onClick={handleStartProcessing} disabled={items.length === 0}>
-                          <Play className="mr-2 h-4 w-4"/>
-                          {currentIndex > 0 ? t('controls.continue') : t('controls.start')}
-                        </Button>
-                      )}
+                    <div className="grid grid-cols-3 gap-2">
+                      <Button onClick={isProcessing ? handlePauseProcessing : handleStartProcessing} disabled={items.length === 0}>
+                        {isProcessing ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+                        {getStartButtonText()}
+                      </Button>
+                      <Button onClick={handleStopProcessing} disabled={!isProcessing && currentIndex === 0}>
+                        <Square className="mr-2 h-4 w-4" /> {t('controls.stop')}
+                      </Button>
                       <Button onClick={handleNext} disabled={isProcessing && isAutoMode || items.length === 0 || currentIndex >= items.length - 1}>
                         <SkipForward className="mr-2 h-4 w-4"/> {t('controls.next')}
                       </Button>
