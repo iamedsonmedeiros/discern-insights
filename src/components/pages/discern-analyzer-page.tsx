@@ -197,7 +197,8 @@ export function DiscernAnalyzerPage() {
     }
   };
 
-  const completedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing' && item.discernResult), [items]);
+  const processedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing'), [items]);
+  const completedItems = useMemo(() => items.filter(item => item.status === 'completed' && item.discernResult), [items]);
   
   const handleGenerateArticle = async () => {
     if (completedItems.length === 0) {
@@ -314,9 +315,9 @@ export function DiscernAnalyzerPage() {
                   <CardDescription>{t('export.description')}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                    <Button variant="outline" className="w-full" onClick={() => exportCsv(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>{t('export.csv')}</Button>
-                    <Button variant="outline" className="w-full" onClick={() => exportJson(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>{t('export.json')}</Button>
-                    <Button variant="outline" className="w-full" onClick={() => exportDocx(completedItems, 'discern_analysis_results')} disabled={completedItems.length === 0}>
+                    <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.json')}</Button>
+                    <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>
                       <FileText className="mr-2 h-4 w-4"/>
                       {t('export.docx')}
                     </Button>

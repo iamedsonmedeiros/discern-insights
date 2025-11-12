@@ -55,7 +55,7 @@ export function exportCsv(data: AnalysisItem[], filename: string) {
   const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `item${String(i + 1).padStart(2, '0')}_score`);
 
   const headers = [
-    'index', 'url', 'status', 'motivo', 'titulo',
+    'index', 'url', 'status', 'reason', 'title',
     'score_geral', 'confiabilidade_avg', 'qualidade_tratamento_avg',
     ...discernItemHeaders,
     'resumo_executivo', 'observacoes', 'recomendacoes'
