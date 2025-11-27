@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
-import { type AnalysisItem } from "./types";
+import { type AnalysisItem, type AnalysisStatus } from "./types";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Level, Indent, Numbering, AbstractNumbering } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -115,6 +115,19 @@ const discernQuestions: Record<string, string> = {
     'item16': '16. Avaliação geral da qualidade'
 };
 
+
+const statusTranslations: Record<AnalysisStatus, string> = {
+  pending: 'Pendente',
+  processing: 'Processando',
+  completed: 'Concluído',
+  not_eligible_pdf: 'Não Elegível (PDF)',
+  not_eligible_video: 'Não Elegível (Vídeo)',
+  unavailable_offline: 'Offline / Indisponível',
+  scraping_error: 'Erro de Extração',
+  analysis_error: 'Erro de Análise',
+};
+
+
 export async function exportDocx(data: AnalysisItem[], filename: string) {
     if (data.length === 0) return;
 
@@ -122,74 +135,95 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
         sections: [{
             properties: {},
             children: data.flatMap((item, index) => {
-                if (!item.discernResult) return [];
-
                 const children: Paragraph[] = [
-                    new Paragraph({
+                     new Paragraph({
                         text: item.meta?.title || item.url,
                         heading: HeadingLevel.HEADING_1,
                     }),
                     new Paragraph({
                         children: [new TextRun({ text: item.url, style: "Hyperlink" })],
                     }),
-                    new Paragraph({ text: `Análise concluída em: ${new Date(item.updatedAt).toLocaleString()}`, style: 'Emphasis' }),
-                    new Paragraph({ text: " " }),
-
-                    new Paragraph({ text: "Métricas Principais", heading: HeadingLevel.HEADING_2 }),
-                    new Paragraph({
-                        children: [
-                            new TextRun({ text: "Confiabilidade: ", bold: true }),
-                            new TextRun(item.discernResult.domainAverages.confiabilidade.toFixed(2)),
-                        ]
-                    }),
-                    new Paragraph({
-                        children: [
-                            new TextRun({ text: "Qualidade do Tratamento: ", bold: true }),
-                            new TextRun(item.discernResult.domainAverages.qualidade_tratamento.toFixed(2)),
-                        ]
-                    }),
-                     new Paragraph({
-                        children: [
-                            new TextRun({ text: "Score Geral: ", bold: true }),
-                            new TextRun(item.discernResult.domainAverages.score_geral.toFixed(2)),
-                        ]
-                    }),
-                    new Paragraph({ text: " " }),
-
-                    new Paragraph({ text: "Resumo Executivo", heading: HeadingLevel.HEADING_2 }),
-                    new Paragraph(item.discernResult.resumo),
-                    new Paragraph({ text: " " }),
-                    
-                    new Paragraph({ text: "Observações", heading: HeadingLevel.HEADING_2 }),
-                    new Paragraph(item.discernResult.observacoes),
-                    new Paragraph({ text: " " }),
-
-                    new Paragraph({ text: "Recomendações", heading: HeadingLevel.HEADING_2 }),
-                    new Paragraph(item.discernResult.recommmendacoes),
-                    new Paragraph({ text: " " }),
-
-                    new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
                 ];
-                
-                Object.entries(item.discernResult.scores).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, score]) => {
-                    children.push(new Paragraph({
-                        children: [
-                            new TextRun({ text: discernQuestions[key] || key, bold: true }),
-                        ]
-                    }));
-                    children.push(new Paragraph({
-                        children: [
-                            new TextRun({ text: `Score: ${score}/5`, bold: false }),
-                        ]
-                    }));
-                    children.push(new Paragraph({
-                        children: [
-                             new TextRun({ text: "Justificativa: ", bold: false, italics: true }),
-                             new TextRun({ text: item.discernResult!.justifications[key], italics: true }),
-                        ]
-                    }));
-                     children.push(new Paragraph({ text: " " }));
-                });
+
+                if (item.discernResult) {
+                    children.push(
+                        new Paragraph({ text: `Análise concluída em: ${new Date(item.updatedAt).toLocaleString()}`, style: 'Emphasis' }),
+                        new Paragraph({ text: " " }),
+
+                        new Paragraph({ text: "Métricas Principais", heading: HeadingLevel.HEADING_2 }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "Confiabilidade: ", bold: true }),
+                                new TextRun(item.discernResult.domainAverages.confiabilidade.toFixed(2)),
+                            ]
+                        }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "Qualidade do Tratamento: ", bold: true }),
+                                new TextRun(item.discernResult.domainAverages.qualidade_tratamento.toFixed(2)),
+                            ]
+                        }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "Score Geral: ", bold: true }),
+                                new TextRun(item.discernResult.domainAverages.score_geral.toFixed(2)),
+                            ]
+                        }),
+                        new Paragraph({ text: " " }),
+
+                        new Paragraph({ text: "Resumo Executivo", heading: HeadingLevel.HEADING_2 }),
+                        new Paragraph(item.discernResult.resumo),
+                        new Paragraph({ text: " " }),
+                        
+                        new Paragraph({ text: "Observações", heading: HeadingLevel.HEADING_2 }),
+                        new Paragraph(item.discernResult.observacoes),
+                        new Paragraph({ text: " " }),
+
+                        new Paragraph({ text: "Recomendações", heading: HeadingLevel.HEADING_2 }),
+                        new Paragraph(item.discernResult.recommmendacoes),
+                        new Paragraph({ text: " " }),
+
+                        new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
+                    );
+                    
+                    Object.entries(item.discernResult.scores).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, score]) => {
+                        children.push(new Paragraph({
+                            children: [ new TextRun({ text: discernQuestions[key] || key, bold: true }) ]
+                        }));
+                        children.push(new Paragraph({
+                            children: [ new TextRun({ text: `Score: ${score}/5` }) ]
+                        }));
+                        children.push(new Paragraph({
+                            children: [
+                                new TextRun({ text: "Justificativa: ", italics: true }),
+                                new TextRun({ text: item.discernResult!.justifications[key], italics: true }),
+                            ]
+                        }));
+                        children.push(new Paragraph({ text: " " }));
+                    });
+                } else {
+                     children.push(
+                        new Paragraph({ text: " " }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "Status: ", bold: true }),
+                                new TextRun({ text: statusTranslations[item.status] || item.status, color: "FF0000" }),
+                            ],
+                        }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "Motivo: ", bold: true }),
+                                new TextRun(item.reason || "Nenhum motivo especificado."),
+                            ],
+                        }),
+                         new Paragraph({ text: " " }),
+                         new Paragraph({
+                            children: [
+                                new TextRun({ text: "A análise automatizada não pôde ser concluída. Recomenda-se uma verificação e análise manual deste item.", bold: true, italics: true }),
+                            ]
+                         })
+                    );
+                }
 
                 if (index < data.length - 1) {
                     children.push(new Paragraph({ children: [new PageBreak()] }));
