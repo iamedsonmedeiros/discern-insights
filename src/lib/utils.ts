@@ -1,3 +1,4 @@
+
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { type AnalysisItem, type AnalysisStatus } from "./types";
@@ -137,7 +138,7 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
             children: data.flatMap((item, index) => {
                 const children: Paragraph[] = [
                      new Paragraph({
-                        text: item.meta?.title || item.url,
+                        text: `${index + 1}. ${item.meta?.title || item.url}`,
                         heading: HeadingLevel.HEADING_1,
                     }),
                     new Paragraph({
