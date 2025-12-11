@@ -42,11 +42,19 @@ export async function processUrl(
   let discernResult: AnalysisItem["discernResult"] | undefined;
   const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
 
+  // Immediately check for direct YouTube/Vimeo URLs
+  if (/youtube\.com|youtu\.be|vimeo\.com/.test(url)) {
+      return {
+          status: "not_eligible_video",
+          reason: "DISCERN does not analyze videos",
+          meta,
+      };
+  }
 
   try {
     const response = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+        "User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
@@ -83,8 +91,8 @@ export async function processUrl(
 
     let textContent = htmlToText(html);
     
-    const hasVideo = html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html);
-    if (hasVideo && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
+    const hasVideoEmbed = html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html);
+    if (hasVideoEmbed && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
       return {
         status: "not_eligible_video",
         reason: "DISCERN does not analyze videos",
