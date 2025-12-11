@@ -51,6 +51,16 @@ export async function processUrl(
       };
   }
 
+  // Immediately check for direct PDF URLs
+  if (url.toLowerCase().endsWith('.pdf')) {
+      return {
+          status: "not_eligible_pdf",
+          reason: "DISCERN does not analyze PDFs",
+          meta,
+      };
+  }
+
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -95,7 +105,7 @@ export async function processUrl(
     if (hasVideoEmbed && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
       return {
         status: "not_eligible_video",
-        reason: "DISCERN does not analyze videos",
+        reason: "Content is primarily video with insufficient text.",
         meta,
       };
     }

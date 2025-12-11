@@ -29,7 +29,7 @@ export function DiscernAnalyzerPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const { toast } = useToast();
-  const isProcessingRef = useRef(isProcessing);
+  const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
 
   useEffect(() => {
@@ -223,8 +223,7 @@ export function DiscernAnalyzerPage() {
   };
 
   const getStartButtonText = () => {
-      if (isProcessing) return t('controls.pause');
-      if (currentIndex > 0) return t('controls.continue');
+      if (currentIndex > 0 && !isProcessing) return t('controls.continue');
       return t('controls.start');
   }
 
@@ -294,17 +293,19 @@ export function DiscernAnalyzerPage() {
                       </Label>
                       <Switch id="auto-mode" checked={isAutoMode} onCheckedChange={setIsAutoMode} />
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button onClick={isProcessing ? handlePauseProcessing : handleStartProcessing} disabled={items.length === 0}>
+                    <div className="grid grid-cols-2 gap-2">
+                       <Button onClick={isProcessing ? handlePauseProcessing : handleStartProcessing} disabled={items.length === 0}>
                         {isProcessing ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
-                        {getStartButtonText()}
+                        {isProcessing ? t('controls.pause') : getStartButtonText()}
                       </Button>
-                      <Button onClick={handleStopProcessing} disabled={!isProcessing && currentIndex === 0}>
+                      <Button onClick={handleStopProcessing} disabled={!isProcessing && currentIndex === 0} variant="destructive">
                         <Square className="mr-2 h-4 w-4" /> {t('controls.stop')}
                       </Button>
-                      <Button onClick={handleNext} disabled={isProcessing && isAutoMode || items.length === 0 || currentIndex >= items.length - 1}>
-                        <SkipForward className="mr-2 h-4 w-4"/> {t('controls.next')}
-                      </Button>
+                      <div className="col-span-2">
+                        <Button onClick={handleNext} disabled={isProcessing && isAutoMode || items.length === 0 || currentIndex >= items.length - 1} className="w-full">
+                          <SkipForward className="mr-2 h-4 w-4"/> {t('controls.next')}
+                        </Button>
+                      </div>
                     </div>
                 </CardContent>
             </Card>

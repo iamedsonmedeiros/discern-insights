@@ -13,7 +13,7 @@ import type { AnalysisItem } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/i18n/use-i18n";
-import type { TranslationKey } from "../i18n/translations";
+import type { TranslationKey } from "@/components/i18n/translations";
 
 type ResultCardProps = {
   activeItem: AnalysisItem | null;
@@ -94,13 +94,13 @@ export function ResultCard({ activeItem, isLoading }: ResultCardProps) {
   
   const { domainAverages, scores, justifications } = discernResult;
 
-  const discernQuestions: Record<string, string> = {
-    'item01': t('discern.q1'), 'item02': t('discern.q2'), 'item03': t('discern.q3'),
-    'item04': t('discern.q4'), 'item05': t('discern.q5'), 'item06': t('discern.q6'),
-    'item07': t('discern.q7'), 'item08': t('discern.q8'), 'item09': t('discern.q9'),
-    'item10': t('discern.q10'), 'item11': t('discern.q11'), 'item12': t('discern.q12'),
-    'item13': t('discern.q13'), 'item14': t('discern.q14'), 'item15': t('discern.q15'),
-    'item16': t('discern.q16')
+  const discernQuestions: Record<string, TranslationKey> = {
+    'item01': 'discern.q1', 'item02': 'discern.q2', 'item03': 'discern.q3',
+    'item04': 'discern.q4', 'item05': 'discern.q5', 'item06': 'discern.q6',
+    'item07': 'discern.q7', 'item08': 'discern.q8', 'item09': 'discern.q9',
+    'item10': 'discern.q10', 'item11': 'discern.q11', 'item12': 'discern.q12',
+    'item13': 'discern.q13', 'item14': 'discern.q14', 'item15': 'discern.q15',
+    'item16': 'discern.q16'
   };
   
 
@@ -171,7 +171,7 @@ export function ResultCard({ activeItem, isLoading }: ResultCardProps) {
                     <AccordionItem value={key} key={key}>
                         <AccordionTrigger>
                             <div className="flex justify-between items-center w-full pr-4">
-                                <span>{discernQuestions[key] || key}</span>
+                                <span>{t(discernQuestions[key]) || key}</span>
                                 <ScoreStar score={score} />
                             </div>
                         </AccordionTrigger>
