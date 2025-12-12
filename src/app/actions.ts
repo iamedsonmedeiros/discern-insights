@@ -71,7 +71,7 @@ export async function processUrl(
         "Connection": "keep-alive"
       },
       redirect: "follow",
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(25000),
     });
 
     meta.httpStatus = response.status;
@@ -142,7 +142,7 @@ export async function processUrl(
     status = "scraping_error";
     if (error instanceof Error) {
       if (error.name === "TimeoutError" || error.name === 'AbortError') {
-        reason = "The request timed out after 20 seconds.";
+        reason = "The request timed out after 25 seconds.";
       } else {
         reason = `Extraction failed: ${error.message}`;
       }
