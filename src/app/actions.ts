@@ -3,7 +3,7 @@
 import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
 import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
-import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
+import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput } from "@/lib/types";
 
 function htmlToText(html: string): string {
   // Remove script, style, and head elements
@@ -152,6 +152,31 @@ export async function processUrl(
   }
 
   return { status, reason, meta, discernResult };
+}
+
+export async function analyzeTextDirectly(
+  text: string,
+  language: string = 'pt-BR'
+): Promise<PerformDiscernAnalysisOutput> {
+  let textContent = text;
+  if (textContent.length > 30000) {
+    try {
+      const summaryResult = await summarizeLongContent({ text: textContent, language });
+      textContent = summaryResult.summary;
+    } catch (e) {
+      console.error("Summarization failed during manual analysis:", e);
+      textContent = textContent.substring(0, 30000);
+    }
+  }
+  
+  try {
+    const discernResult = await performDiscernAnalysis({ text: textContent, language });
+    return discernResult;
+  } catch (e) {
+    console.error("DISCERN analysis failed during manual analysis:", e);
+    const message = e instanceof Error ? e.message : "Unknown error during analysis.";
+    throw new Error(message);
+  }
 }
 
 

@@ -1,4 +1,7 @@
-import type { PerformDiscernAnalysisOutput } from "@/ai/flows/perform-discern-analysis";
+import type { PerformDiscernAnalysisOutput as PDORaw } from "@/ai/flows/perform-discern-analysis";
+
+// We re-export the type here to avoid a direct dependency on the AI flow file in components.
+export type PerformDiscernAnalysisOutput = PDORaw;
 
 export type AnalysisStatus =
   | "pending"

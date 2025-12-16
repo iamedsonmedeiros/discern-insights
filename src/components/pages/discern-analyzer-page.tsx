@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction } from "@/app/actions";
+import { processUrl, generateArticleAction, analyzeTextDirectly } from "@/app/actions";
 import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
-import type { AnalysisItem } from "@/lib/types";
+import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AnalysisQueue } from "@/components/app/analysis-queue";
 import { ResultCard } from "@/components/app/result-card";
 import { useI18n } from "@/components/i18n/use-i18n";
@@ -26,6 +27,10 @@ export function DiscernAnalyzerPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
+  const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
+  const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string|null>(null);
+  const [manualAnalysisText, setManualAnalysisText] = useState("");
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const { toast } = useToast();
@@ -197,6 +202,37 @@ export function DiscernAnalyzerPage() {
     }
   };
 
+  const handleOpenManualAnalysis = (itemId: string) => {
+    setManualAnalysisTargetId(itemId);
+    setIsManualAnalysisOpen(true);
+  };
+  
+  const handleManualAnalysisSubmit = async () => {
+    if (!manualAnalysisTargetId || !manualAnalysisText) return;
+
+    setIsSubmittingManual(true);
+    try {
+      const result = await analyzeTextDirectly(manualAnalysisText, locale);
+      setItems(prev => prev.map(item => item.id === manualAnalysisTargetId 
+        ? { ...item, status: 'completed', discernResult: result, reason: 'Manually analyzed', updatedAt: new Date().toISOString() } 
+        : item
+      ));
+      toast({ title: t('manualAnalysis.successTitle'), description: t('manualAnalysis.successBody') });
+      setIsManualAnalysisOpen(false);
+      setManualAnalysisText("");
+      setManualAnalysisTargetId(null);
+    } catch(error) {
+      toast({ 
+        title: t('manualAnalysis.errorTitle'), 
+        description: error instanceof Error ? error.message : String(error), 
+        variant: "destructive" 
+      });
+    } finally {
+      setIsSubmittingManual(false);
+    }
+  };
+
+
   const processedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing'), [items]);
   const completedItems = useMemo(() => items.filter(item => item.status === 'completed' && item.discernResult), [items]);
   
@@ -228,6 +264,7 @@ export function DiscernAnalyzerPage() {
   }
 
   return (
+    <>
     <div className="flex flex-col min-h-screen font-sans">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="container mx-auto flex items-center justify-between p-4">
@@ -336,10 +373,43 @@ export function DiscernAnalyzerPage() {
 
           <div className="lg:col-span-2 flex flex-col gap-8">
             <AnalysisQueue items={items} activeItemId={activeItemId} onRowClick={setActiveItemId} />
-            <ResultCard activeItem={activeItem} isLoading={isProcessing && activeItem?.status === 'processing'} />
+            <ResultCard 
+              activeItem={activeItem} 
+              isLoading={isProcessing && activeItem?.status === 'processing'}
+              onManualAnalysisClick={handleOpenManualAnalysis}
+            />
           </div>
         </div>
       </main>
     </div>
+    
+    <Dialog open={isManualAnalysisOpen} onOpenChange={setIsManualAnalysisOpen}>
+        <DialogContent className="sm:max-w-[625px]">
+            <DialogHeader>
+                <DialogTitle>{t('manualAnalysis.title')}</DialogTitle>
+                <DialogDescription>
+                    {t('manualAnalysis.description')}
+                </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+                <Textarea 
+                    placeholder={t('manualAnalysis.placeholder')} 
+                    rows={15}
+                    value={manualAnalysisText}
+                    onChange={(e) => setManualAnalysisText(e.target.value)}
+                />
+            </div>
+            <DialogFooter>
+                <Button 
+                  onClick={handleManualAnalysisSubmit} 
+                  disabled={!manualAnalysisText || isSubmittingManual}
+                >
+                  {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t('manualAnalysis.submit')}
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+    </>
   );
 }

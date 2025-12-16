@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { Copy, FileText, Info, Award, ListChecks, Star, Bot, AlertCircle } from "lucide-react";
+import { Copy, FileText, Info, Award, ListChecks, Star, Bot, AlertCircle, Edit } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import type { TranslationKey } from "@/components/i18n/translations";
 type ResultCardProps = {
   activeItem: AnalysisItem | null;
   isLoading: boolean;
+  onManualAnalysisClick: (itemId: string) => void;
 };
 
 
@@ -30,7 +31,7 @@ const ScoreStar = ({ score }: { score: number }) => (
 );
 
 
-export function ResultCard({ activeItem, isLoading }: ResultCardProps) {
+export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: ResultCardProps) {
   const { t } = useI18n();
   const { toast } = useToast();
 
@@ -71,6 +72,8 @@ export function ResultCard({ activeItem, isLoading }: ResultCardProps) {
     );
   }
 
+  const isAnalyzableError = activeItem.status === "scraping_error" || activeItem.status === "analysis_error";
+
   if (activeItem.status !== "completed") {
     return (
       <Card>
@@ -84,6 +87,12 @@ export function ResultCard({ activeItem, isLoading }: ResultCardProps) {
             <AlertTitle>{t('status.title')}: {t(`status.${activeItem.status}` as TranslationKey)}</AlertTitle>
             <AlertDescription>{activeItem.reason || t('results.analysisErrorReason')}</AlertDescription>
           </Alert>
+          {isAnalyzableError && (
+             <Button onClick={() => onManualAnalysisClick(activeItem.id)} className="mt-4 w-full">
+                <Edit className="mr-2 h-4 w-4" />
+                {t('manualAnalysis.button')}
+            </Button>
+          )}
         </CardContent>
       </Card>
     );
