@@ -72,7 +72,7 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
     );
   }
 
-  const isAnalyzableError = activeItem.status === "scraping_error" || activeItem.status === "analysis_error";
+  const isAnalyzableError = ["scraping_error", "analysis_error", "unavailable_offline"].includes(activeItem.status);
 
   if (activeItem.status !== "completed") {
     return (

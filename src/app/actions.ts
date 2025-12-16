@@ -42,8 +42,8 @@ export async function processUrl(
   let discernResult: AnalysisItem["discernResult"] | undefined;
   const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
 
-  // Immediately check for direct YouTube/Vimeo URLs
-  if (/youtube\.com|youtu\.be|vimeo\.com/.test(url)) {
+  // Immediately check for direct YouTube/Vimeo/Instagram URLs
+  if (/youtube\.com|youtu\.be|vimeo\.com|instagram\.com\/reel\//.test(url)) {
       return {
           status: "not_eligible_video",
           reason: "DISCERN does not analyze videos",
