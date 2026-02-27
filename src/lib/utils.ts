@@ -14,14 +14,16 @@ export function parseCsv(content: string): string[] {
   const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (lines.length === 0) return [];
 
-  const firstLineIsHeader = !lines[0].startsWith('http');
-  
+  // More robust header detection
+  const firstLineCells = lines[0].split(',');
+  const firstLineLooksLikeHeader = firstLineCells.some(cell => /url|link|website/i.test(cell)) && !lines[0].startsWith('http');
+
   let urlIndex = 0;
   let dataLines = lines;
 
-  if (firstLineIsHeader) {
-    const header = lines[0].split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
-    const foundUrlIndex = header.indexOf('url');
+  if (firstLineLooksLikeHeader) {
+    const header = firstLineCells.map(h => h.trim().replace(/"/g, '').toLowerCase());
+    const foundUrlIndex = header.findIndex(h => /url|link|website/i.test(h));
     if (foundUrlIndex !== -1) {
       urlIndex = foundUrlIndex;
     }
@@ -30,9 +32,12 @@ export function parseCsv(content: string): string[] {
   
   return dataLines
     .map(line => {
-      // This simple split won't handle URLs with commas, but is sufficient for a single column of URLs.
-      const values = line.split(',');
-      return values[urlIndex]?.trim().replace(/"/g, '');
+      // Basic parser that handles URLs inside quotes, even with commas.
+      // This is not a full RFC 4180 parser, but it's good enough for this use case.
+      const values = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [line];
+      
+      const url = values[urlIndex]?.trim().replace(/"/g, '');
+      return url;
     })
     .filter(url => url && (url.startsWith('http://') || url.startsWith('https://')));
 }

@@ -130,8 +130,12 @@ export function DiscernAnalyzerPage() {
   };
 
   const importUrls = (urls: string[]) => {
-    const uniqueUrls = [...new Set(urls)];
-    if (uniqueUrls.length > 200) {
+    const existingUrls = new Set(items.map(item => item.url));
+    const uniqueIncomingUrls = [...new Set(urls.filter(url => url))]; // Filter out empty strings and get unique
+    
+    const newUrls = uniqueIncomingUrls.filter(url => !existingUrls.has(url));
+
+    if (items.length + newUrls.length > 200) {
       toast({
         title: t('importLimit.title'),
         description: t('importLimit.description'),
@@ -140,7 +144,11 @@ export function DiscernAnalyzerPage() {
       return;
     }
     
-    const newItems: AnalysisItem[] = uniqueUrls.map((url, index) => ({
+    if (newUrls.length === 0) {
+        return;
+    }
+
+    const newItems: AnalysisItem[] = newUrls.map((url, index) => ({
       id: uuidv4(),
       index: items.length + index + 1,
       url,
