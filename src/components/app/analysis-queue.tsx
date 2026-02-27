@@ -48,7 +48,7 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="h-[400px]">
+        <ScrollArea className="max-h-[65vh]">
           <Table>
             <TableHeader className="sticky top-0 bg-background">
               <TableRow>
