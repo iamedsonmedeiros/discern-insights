@@ -112,7 +112,7 @@ export function DiscernAnalyzerPage() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const text = formData.get("urls") as string;
-    const urls = text.split("\n").map(u => u.trim()).filter(Boolean);
+    const urls = text.split(/\r?\n/).map(u => u.trim()).filter(Boolean);
     importUrls(urls);
   };
 
@@ -130,24 +130,36 @@ export function DiscernAnalyzerPage() {
   };
 
   const importUrls = (urls: string[]) => {
+    const MAX_ITEMS = 200;
     const existingUrls = new Set(items.map(item => item.url));
-    const uniqueIncomingUrls = [...new Set(urls.filter(url => url))]; // Filter out empty strings and get unique
+    const uniqueIncomingUrls = [...new Set(urls.filter(url => url))];
     
-    const newUrls = uniqueIncomingUrls.filter(url => !existingUrls.has(url));
+    let newUrls = uniqueIncomingUrls.filter(url => !existingUrls.has(url));
 
-    if (items.length + newUrls.length > 200) {
-      toast({
-        title: t('importLimit.title'),
-        description: t('importLimit.description'),
-        variant: "destructive",
-      });
-      return;
-    }
-    
     if (newUrls.length === 0) {
         return;
     }
 
+    const availableSlots = MAX_ITEMS - items.length;
+
+    if (availableSlots <= 0) {
+        toast({
+            title: t('importLimit.title'),
+            description: t('importLimit.description'),
+            variant: "destructive",
+        });
+        return;
+    }
+
+    let importedCount = newUrls.length;
+    let partialImport = false;
+
+    if (newUrls.length > availableSlots) {
+      newUrls = newUrls.slice(0, availableSlots);
+      importedCount = availableSlots;
+      partialImport = true;
+    }
+    
     const newItems: AnalysisItem[] = newUrls.map((url, index) => ({
       id: uuidv4(),
       index: items.length + index + 1,
@@ -157,7 +169,15 @@ export function DiscernAnalyzerPage() {
     }));
 
     setItems((prev) => [...prev, ...newItems]);
-    toast({ title: t('importSuccess.title', { count: newItems.length }), description: t('importSuccess.description') });
+
+    if (partialImport) {
+        toast({
+            title: t('importLimit.title'),
+            description: t('importLimit.partial', { count: importedCount }),
+        });
+    } else {
+        toast({ title: t('importSuccess.title', { count: importedCount }), description: t('importSuccess.description') });
+    }
   };
 
   const requestNotificationPermission = async () => {
