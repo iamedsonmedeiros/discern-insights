@@ -11,35 +11,39 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function parseCsv(content: string): string[] {
-  const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  // Normalize line endings and split into lines, filtering out empty ones
+  const lines = content.replace(/\r/g, '').split('\n').filter(Boolean);
   if (lines.length === 0) return [];
 
-  // More robust header detection
-  const firstLineCells = lines[0].split(',');
-  const firstLineLooksLikeHeader = firstLineCells.some(cell => /url|link|website/i.test(cell)) && !lines[0].startsWith('http');
+  // Parse header to find 'url' column
+  const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/"/g, ''));
+  let urlIndex = header.findIndex(h => h === 'url' || h === 'link' || h === 'website');
 
-  let urlIndex = 0;
-  let dataLines = lines;
-
-  if (firstLineLooksLikeHeader) {
-    const header = firstLineCells.map(h => h.trim().replace(/"/g, '').toLowerCase());
-    const foundUrlIndex = header.findIndex(h => /url|link|website/i.test(h));
-    if (foundUrlIndex !== -1) {
-      urlIndex = foundUrlIndex;
-    }
-    dataLines = lines.slice(1);
-  }
+  const dataLines = urlIndex !== -1 ? lines.slice(1) : lines;
   
-  return dataLines
-    .map(line => {
-      // Basic parser that handles URLs inside quotes, even with commas.
-      // This is not a full RFC 4180 parser, but it's good enough for this use case.
-      const values = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [line];
-      
-      const url = values[urlIndex]?.trim().replace(/"/g, '');
-      return url;
-    })
-    .filter(url => url && (url.startsWith('http://') || url.startsWith('https://')));
+  // If no 'url' header, assume first column
+  if (urlIndex === -1) {
+    urlIndex = 0;
+  }
+
+  const urls: string[] = [];
+  for (const line of dataLines) {
+    // A simple split is more robust than the previous complex regex.
+    const columns = line.split(','); 
+    if (columns.length > urlIndex) {
+      let urlField = columns[urlIndex].trim();
+      // Remove surrounding quotes
+      if (urlField.startsWith('"') && urlField.endsWith('"')) {
+        urlField = urlField.slice(1, -1);
+      }
+      // Final check for valid URL format
+      if (urlField.startsWith('http')) {
+        urls.push(urlField);
+      }
+    }
+  }
+
+  return urls;
 }
 
 export function exportJson(data: AnalysisItem[], filename: string) {
