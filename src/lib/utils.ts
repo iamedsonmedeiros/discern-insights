@@ -11,20 +11,26 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function parseCsv(content: string): string[] {
-  const lines = content.split(/\r?\n/);
+  const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (lines.length === 0) return [];
-  
-  const headerLine = lines.find(line => line.trim() !== '');
-  if (!headerLine) return [];
 
-  const header = headerLine.split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
-  let urlIndex = header.indexOf('url');
-  if (urlIndex === -1) {
-    urlIndex = 0; // Assume first column if 'url' header not found
+  const firstLineIsHeader = !lines[0].startsWith('http');
+  
+  let urlIndex = 0;
+  let dataLines = lines;
+
+  if (firstLineIsHeader) {
+    const header = lines[0].split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
+    const foundUrlIndex = header.indexOf('url');
+    if (foundUrlIndex !== -1) {
+      urlIndex = foundUrlIndex;
+    }
+    dataLines = lines.slice(1);
   }
   
-  return lines
+  return dataLines
     .map(line => {
+      // This simple split won't handle URLs with commas, but is sufficient for a single column of URLs.
       const values = line.split(',');
       return values[urlIndex]?.trim().replace(/"/g, '');
     })
