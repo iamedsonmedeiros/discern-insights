@@ -14,31 +14,30 @@ export function extractUrlsFromString(content: string): string[] {
   if (!content) {
     return [];
   }
-  
-  // This regex finds things that look like URLs. It's not perfect but it's good for this use case.
-  // It looks for http:// or https:// followed by non-whitespace characters.
-  const urlRegex = /https?:\/\/[^\s]+/g;
-  
-  let matches = content.match(urlRegex);
-  
-  if (!matches) {
-    return [];
-  }
-  
-  // Post-processing to clean up common CSV/text artifacts.
-  const cleanedUrls = matches.map(url => {
-    // Remove trailing characters that are almost never part of a valid URL,
-    // like punctuation from a sentence or quotes from a CSV.
-    // This loop will remove multiple trailing characters, e.g. '",.'
-    let cleaned = url;
-    while (cleaned.length > 0 && '.,;"\'\r\n\t'.includes(cleaned.slice(-1))) {
-      cleaned = cleaned.slice(0, -1);
-    }
-    return cleaned;
-  });
 
-  // Deduplicate and return
-  return [...new Set(cleanedUrls)];
+  // Split by any kind of newline or comma, which covers .txt, .csv, and pasted lists
+  const potentialUrls = content.split(/[\r\n,]+/);
+
+  const urls = potentialUrls
+    .map(line => {
+      // Clean up the line: trim whitespace, remove surrounding quotes
+      let cleanedLine = line.trim().replace(/^"|"$/g, '');
+      
+      // Find the URL within the cleaned line
+      const urlMatch = cleanedLine.match(/https?:\/\/[^\s"']+/);
+      if (urlMatch) {
+          // Further clean trailing punctuation
+          let url = urlMatch[0];
+           while (url.length > 0 && '.,;\'"\\'.includes(url.slice(-1))) {
+                url = url.slice(0, -1);
+            }
+          return url;
+      }
+      return null;
+    })
+    .filter((url): url is string => !!url); // Filter out nulls
+
+  return [...new Set(urls)];
 }
 
 
