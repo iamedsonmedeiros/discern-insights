@@ -4,7 +4,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl, generateArticleAction, analyzeTextDirectly } from "@/app/actions";
-import { exportCsv, exportJson, exportDocx, parseCsv, saveDocxFromContent } from "@/lib/utils";
+import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent } from "@/lib/utils";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -112,7 +112,7 @@ export function DiscernAnalyzerPage() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const text = formData.get("urls") as string;
-    const urls = text.split(/\r?\n/).map(u => u.trim()).filter(Boolean);
+    const urls = extractUrlsFromString(text);
     importUrls(urls);
   };
 
@@ -123,21 +123,24 @@ export function DiscernAnalyzerPage() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      const urls = parseCsv(content);
+      const urls = extractUrlsFromString(content);
       importUrls(urls);
     };
     reader.readAsText(file);
+    e.target.value = ''; // Reset file input
   };
 
   const importUrls = (urls: string[]) => {
     const MAX_ITEMS = 200;
     const existingUrls = new Set(items.map(item => item.url));
-    const uniqueIncomingUrls = [...new Set(urls.filter(url => url))];
     
-    let newUrls = uniqueIncomingUrls.filter(url => !existingUrls.has(url));
+    let newUrls = urls.filter(url => !existingUrls.has(url));
 
     if (newUrls.length === 0) {
-        return;
+      if (urls.length > 0) {
+        toast({ title: "No new URLs", description: "All provided URLs are already in the queue." });
+      }
+      return;
     }
 
     const availableSlots = MAX_ITEMS - items.length;
@@ -336,7 +339,7 @@ export function DiscernAnalyzerPage() {
                     </form>
                   </TabsContent>
                   <TabsContent value="upload" className="mt-4">
-                    <Input id="csv-upload" type="file" accept=".csv" onChange={handleFileImport} />
+                    <Input id="csv-upload" type="file" accept=".csv,.txt" onChange={handleFileImport} />
                     <p className="text-xs text-muted-foreground mt-2">{t('import.csvHint')}</p>
                   </TabsContent>
                 </Tabs>

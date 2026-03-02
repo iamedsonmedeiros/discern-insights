@@ -10,41 +10,22 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function parseCsv(content: string): string[] {
-  // Normalize line endings and split into lines, filtering out empty ones
-  const lines = content.replace(/\r/g, '').split('\n').filter(Boolean);
-  if (lines.length === 0) return [];
-
-  // Parse header to find 'url' column
-  const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/"/g, ''));
-  let urlIndex = header.findIndex(h => h === 'url' || h === 'link' || h === 'website');
-
-  const dataLines = urlIndex !== -1 ? lines.slice(1) : lines;
+export function extractUrlsFromString(content: string): string[] {
+  if (!content) {
+    return [];
+  }
+  // Regex to find all http/https URLs in a block of text.
+  const urlRegex = /https?:\/\/[^\s"]+/g;
+  const matches = content.match(urlRegex);
   
-  // If no 'url' header, assume first column
-  if (urlIndex === -1) {
-    urlIndex = 0;
+  if (!matches) {
+    return [];
   }
-
-  const urls: string[] = [];
-  for (const line of dataLines) {
-    // A simple split is more robust than the previous complex regex.
-    const columns = line.split(','); 
-    if (columns.length > urlIndex) {
-      let urlField = columns[urlIndex].trim();
-      // Remove surrounding quotes
-      if (urlField.startsWith('"') && urlField.endsWith('"')) {
-        urlField = urlField.slice(1, -1);
-      }
-      // Final check for valid URL format
-      if (urlField.startsWith('http')) {
-        urls.push(urlField);
-      }
-    }
-  }
-
-  return urls;
+  
+  // Deduplicate and return
+  return [...new Set(matches)];
 }
+
 
 export function exportJson(data: AnalysisItem[], filename: string) {
   const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
