@@ -31,13 +31,13 @@ export function DiscernAnalyzerPage() {
   const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
   const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string|null>(null);
   const [manualAnalysisText, setManualAnalysisText] = useState("");
-  const [textareaValue, setTextareaValue] = useState("");
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const { toast } = useToast();
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     isProcessingRef.current = isProcessing;
@@ -111,8 +111,12 @@ export function DiscernAnalyzerPage() {
   }, [items, currentIndex, processSingleItem, showCompletionNotification]);
 
   const handlePasteImport = () => {
-    const urls = extractUrlsFromString(textareaValue);
+    const content = textareaRef.current?.value || "";
+    const urls = extractUrlsFromString(content);
     importUrls(urls);
+    if (textareaRef.current) {
+        textareaRef.current.value = ""; // Clear the textarea after import
+    }
   };
 
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -333,11 +337,10 @@ export function DiscernAnalyzerPage() {
                   </TabsList>
                   <TabsContent value="paste" className="mt-4">
                       <Textarea 
+                        ref={textareaRef}
                         name="urls"
                         placeholder={t('import.placeholder')}
                         rows={6}
-                        value={textareaValue}
-                        onChange={(e) => setTextareaValue(e.target.value)}
                       />
                       <Button type="button" onClick={handlePasteImport} className="mt-4 w-full">
                         {t('import.button')}
@@ -451,3 +454,5 @@ export function DiscernAnalyzerPage() {
 }
 
       
+
+    
