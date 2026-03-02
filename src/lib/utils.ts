@@ -14,30 +14,28 @@ export function extractUrlsFromString(content: string): string[] {
   if (!content) {
     return [];
   }
+  
+  // This regex finds all http/https URLs in the text.
+  // The 'g' flag ensures it finds all matches, not just the first one.
+  const urlRegex = /https?:\/\/[^\s"']+/g;
+  const matches = content.match(urlRegex);
 
-  // Split by any kind of newline or comma, which covers .txt, .csv, and pasted lists
-  const potentialUrls = content.split(/[\r\n,]+/);
+  if (!matches) {
+    return [];
+  }
 
-  const urls = potentialUrls
-    .map(line => {
-      // Clean up the line: trim whitespace, remove surrounding quotes
-      let cleanedLine = line.trim().replace(/^"|"$/g, '');
-      
-      // Find the URL within the cleaned line
-      const urlMatch = cleanedLine.match(/https?:\/\/[^\s"']+/);
-      if (urlMatch) {
-          // Further clean trailing punctuation
-          let url = urlMatch[0];
-           while (url.length > 0 && '.,;\'"\\'.includes(url.slice(-1))) {
-                url = url.slice(0, -1);
-            }
-          return url;
-      }
-      return null;
-    })
-    .filter((url): url is string => !!url); // Filter out nulls
-
-  return [...new Set(urls)];
+  // Clean any trailing punctuation that might get caught by the regex
+  const cleanedUrls = matches.map(url => {
+    let cleaned = url;
+    // Remove trailing characters that are unlikely to be part of the URL
+    while (cleaned.length > 0 && '.,;\'"\\)'.includes(cleaned.slice(-1))) {
+        cleaned = cleaned.slice(0, -1);
+    }
+    return cleaned;
+  });
+  
+  // Return unique URLs
+  return [...new Set(cleanedUrls)];
 }
 
 
