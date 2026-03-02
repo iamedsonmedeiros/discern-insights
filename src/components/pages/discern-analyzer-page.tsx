@@ -34,10 +34,10 @@ export function DiscernAnalyzerPage() {
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [notificationPermission, setNotificationPermission] = useState("default");
+  const [pasteContent, setPasteContent] = useState("");
   const { toast } = useToast();
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     isProcessingRef.current = isProcessing;
@@ -111,12 +111,9 @@ export function DiscernAnalyzerPage() {
   }, [items, currentIndex, processSingleItem, showCompletionNotification]);
 
   const handlePasteImport = () => {
-    const content = textareaRef.current?.value || "";
-    const urls = extractUrlsFromString(content);
+    const urls = extractUrlsFromString(pasteContent);
     importUrls(urls);
-    if (textareaRef.current) {
-        textareaRef.current.value = ""; // Clear the textarea after import
-    }
+    setPasteContent(""); // Clear the textarea after import
   };
 
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -337,7 +334,8 @@ export function DiscernAnalyzerPage() {
                   </TabsList>
                   <TabsContent value="paste" className="mt-4">
                       <Textarea 
-                        ref={textareaRef}
+                        value={pasteContent}
+                        onChange={(e) => setPasteContent(e.target.value)}
                         name="urls"
                         placeholder={t('import.placeholder')}
                         rows={6}
@@ -452,7 +450,5 @@ export function DiscernAnalyzerPage() {
     </>
   );
 }
-
-      
 
     
