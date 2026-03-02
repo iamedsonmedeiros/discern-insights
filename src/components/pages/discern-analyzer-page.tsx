@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
@@ -30,6 +31,7 @@ export function DiscernAnalyzerPage() {
   const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
   const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string|null>(null);
   const [manualAnalysisText, setManualAnalysisText] = useState("");
+  const [textareaValue, setTextareaValue] = useState("");
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [notificationPermission, setNotificationPermission] = useState("default");
@@ -108,11 +110,8 @@ export function DiscernAnalyzerPage() {
     }
   }, [items, currentIndex, processSingleItem, showCompletionNotification]);
 
-  const handleTextareaImport = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const text = formData.get("urls") as string;
-    const urls = extractUrlsFromString(text);
+  const handlePasteImport = () => {
+    const urls = extractUrlsFromString(textareaValue);
     importUrls(urls);
   };
 
@@ -333,10 +332,16 @@ export function DiscernAnalyzerPage() {
                     <TabsTrigger value="upload"><FileUp className="mr-2 h-4 w-4"/> {t('import.upload')}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="paste" className="mt-4">
-                    <form onSubmit={handleTextareaImport}>
-                      <Textarea name="urls" placeholder={t('import.placeholder')} rows={6} />
-                      <Button type="submit" className="mt-4 w-full">{t('import.button')}</Button>
-                    </form>
+                      <Textarea 
+                        name="urls"
+                        placeholder={t('import.placeholder')}
+                        rows={6}
+                        value={textareaValue}
+                        onChange={(e) => setTextareaValue(e.target.value)}
+                      />
+                      <Button type="button" onClick={handlePasteImport} className="mt-4 w-full">
+                        {t('import.button')}
+                      </Button>
                   </TabsContent>
                   <TabsContent value="upload" className="mt-4">
                     <Input id="csv-upload" type="file" accept=".csv,.txt" onChange={handleFileImport} />
@@ -444,3 +449,5 @@ export function DiscernAnalyzerPage() {
     </>
   );
 }
+
+      
