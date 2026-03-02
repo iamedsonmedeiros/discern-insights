@@ -14,16 +14,15 @@ export function extractUrlsFromString(content: string): string[] {
   if (!content) {
     return [];
   }
-  // Regex to find all http/https URLs in a block of text.
-  const urlRegex = /https?:\/\/[^\s"]+/g;
-  const matches = content.match(urlRegex);
   
-  if (!matches) {
-    return [];
-  }
+  const lines = content.split(/[\r\n]+/);
   
+  const urls = lines
+    .map(line => line.trim())
+    .filter(line => line.startsWith('http://') || line.startsWith('https://'));
+    
   // Deduplicate and return
-  return [...new Set(matches)];
+  return [...new Set(urls)];
 }
 
 
