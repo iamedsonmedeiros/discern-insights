@@ -2,7 +2,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { type AnalysisItem, type AnalysisStatus } from "./types";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Level, Indent, Numbering, AbstractNumbering } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType } from 'docx';
 import { saveAs } from 'file-saver';
 
 
@@ -15,14 +15,30 @@ export function extractUrlsFromString(content: string): string[] {
     return [];
   }
   
-  const lines = content.split(/[\r\n]+/);
+  // This regex finds things that look like URLs. It's not perfect but it's good for this use case.
+  // It looks for http:// or https:// followed by non-whitespace characters.
+  const urlRegex = /https?:\/\/[^\s]+/g;
   
-  const urls = lines
-    .map(line => line.trim())
-    .filter(line => line.startsWith('http://') || line.startsWith('https://'));
-    
+  let matches = content.match(urlRegex);
+  
+  if (!matches) {
+    return [];
+  }
+  
+  // Post-processing to clean up common CSV/text artifacts.
+  const cleanedUrls = matches.map(url => {
+    // Remove trailing characters that are almost never part of a valid URL,
+    // like punctuation from a sentence or quotes from a CSV.
+    // This loop will remove multiple trailing characters, e.g. '",.'
+    let cleaned = url;
+    while (cleaned.length > 0 && '.,;"\'\r\n\t'.includes(cleaned.slice(-1))) {
+      cleaned = cleaned.slice(0, -1);
+    }
+    return cleaned;
+  });
+
   // Deduplicate and return
-  return [...new Set(urls)];
+  return [...new Set(cleanedUrls)];
 }
 
 
@@ -238,18 +254,14 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
 function createSection(text: string): Paragraph[] {
   const paragraphs: Paragraph[] = [];
   const lines = text.split('\n');
-  let currentHeadingLevel: HeadingLevel | undefined = undefined;
 
   for (const line of lines) {
     if (line.startsWith('### ')) {
       paragraphs.push(new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
-      currentHeadingLevel = HeadingLevel.HEADING_3;
     } else if (line.startsWith('## ')) {
       paragraphs.push(new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
-      currentHeadingLevel = HeadingLevel.HEADING_2;
     } else if (line.startsWith('# ')) {
       paragraphs.push(new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
-      currentHeadingLevel = HeadingLevel.HEADING_1;
     } else if (line.trim() === '') {
       paragraphs.push(new Paragraph({ text: '' }));
     } else {
