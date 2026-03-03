@@ -14,31 +14,14 @@ export function extractUrlsFromString(content: string): string[] {
   if (!content) {
     return [];
   }
-
-  // Normalize line endings to \n, then split into an array of lines.
-  // This is far more robust than a single regex on the entire text block.
-  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   
-  const urls: string[] = [];
-
-  for (const line of lines) {
-    // Trim whitespace from the beginning and end of the line.
-    const trimmedLine = line.trim();
-
-    // If the line is not empty and looks like a URL, we process it.
-    if (trimmedLine.startsWith('http://') || trimmedLine.startsWith('https://')) {
-      // Clean any trailing punctuation that might get accidentally included.
-      let cleanedUrl = trimmedLine;
-      // This loop removes trailing characters that are unlikely to be part of the URL itself.
-      while (cleanedUrl.length > 0 && '.,;\'"\\)[]{}'.includes(cleanedUrl.slice(-1))) {
-          cleanedUrl = cleanedUrl.slice(0, -1);
-      }
-      urls.push(cleanedUrl);
-    }
-  }
+  // This regex finds patterns that look like URLs, regardless of what's around them.
+  // It's far more robust than splitting by lines, as it's not dependent on line endings or separators.
+  const urlRegex = /https?:\/\/[^\s/$.?#].[^\s]*/gi;
+  const foundUrls = content.match(urlRegex) || [];
   
-  // Return only the unique URLs found.
-  return [...new Set(urls)];
+  // Deduplicate the results and return
+  return [...new Set(foundUrls)];
 }
 
 
