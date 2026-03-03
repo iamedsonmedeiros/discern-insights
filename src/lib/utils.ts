@@ -15,9 +15,10 @@ export function extractUrlsFromString(content: string): string[] {
     return [];
   }
   
-  // This regex finds patterns that look like URLs, regardless of what's around them.
-  // It's far more robust than splitting by lines, as it's not dependent on line endings or separators.
-  const urlRegex = /https?:\/\/[^\s/$.?#].[^\s]*/gi;
+  // This regex is simple and robust. It finds anything that starts with http:// or https://
+  // and continues until it hits a whitespace character. This is much more reliable
+  // for pasted content than trying to parse line endings or other complex formats.
+  const urlRegex = /https?:\/\/\S+/gi;
   const foundUrls = content.match(urlRegex) || [];
   
   // Deduplicate the results and return
