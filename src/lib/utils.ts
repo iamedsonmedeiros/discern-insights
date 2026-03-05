@@ -14,15 +14,23 @@ export function extractUrlsFromString(content: string): string[] {
   if (!content) {
     return [];
   }
-  
-  // This regex is specifically designed to find URLs inside a larger body of text.
-  // It looks for http/https and matches characters that are typically found in URLs,
-  // making it more robust than simpler, broader patterns.
-  const urlRegex = /https?:\/\/[a-zA-Z0-9.\-@:%_\\+~#?&/=]+/gi;
-  const foundUrls = content.match(urlRegex) || [];
-  
-  // Deduplicate the results and return
-  return [...new Set(foundUrls)];
+
+  // This procedural approach is far more robust than a single complex regex.
+  // 1. Split the content by any whitespace (spaces, newlines, tabs) or commas.
+  // 2. Filter out any empty strings that result from the split.
+  const potentialUrls = content.split(/[\s,]+/).filter(Boolean);
+
+  // 3. For each potential URL, trim it and perform basic validation.
+  const cleanedUrls = potentialUrls.map(url => {
+      // Trim whitespace and remove surrounding quotes which are common in CSVs.
+      return url.trim().replace(/^"|"$/g, '');
+  }).filter(url => 
+      // It must start with http and have some characters after.
+      url.startsWith('http') && url.length > 8
+  );
+
+  // 4. Return the list with duplicates removed.
+  return [...new Set(cleanedUrls)];
 }
 
 
