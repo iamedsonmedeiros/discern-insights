@@ -15,10 +15,10 @@ export function extractUrlsFromString(content: string): string[] {
     return [];
   }
   
-  // This regex is simple and robust. It finds anything that starts with http:// or https://
-  // and continues until it hits a whitespace character. This is much more reliable
-  // for pasted content than trying to parse line endings or other complex formats.
-  const urlRegex = /https?:\/\/\S+/gi;
+  // This regex is specifically designed to find URLs inside a larger body of text.
+  // It looks for http/https and matches characters that are typically found in URLs,
+  // making it more robust than simpler, broader patterns.
+  const urlRegex = /https?:\/\/[a-zA-Z0-9.\-@:%_\\+~#?&/=]+/gi;
   const foundUrls = content.match(urlRegex) || [];
   
   // Deduplicate the results and return
