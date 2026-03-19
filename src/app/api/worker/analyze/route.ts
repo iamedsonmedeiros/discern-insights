@@ -73,7 +73,7 @@ async function handler(request: NextRequest) {
 
       const results = await Promise.allSettled(
         items.map(async (item: { id: string; url: string; index: number }) => {
-          const result = await processUrl(item.url, job.language || "pt-BR");
+          const result = await processUrl(item.url, job.language || "pt-BR", true);
 
           await supabase
             .from("analysis_items")

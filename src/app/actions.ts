@@ -200,10 +200,13 @@ function htmlToText(html: string): string {
 
 export async function processUrl(
   url: string,
-  language: string = 'pt-BR'
+  language: string = 'pt-BR',
+  skipAuth: boolean = false
 ): Promise<Pick<AnalysisItem, "status" | "reason" | "meta" | "discernResult">> {
-  // Ensure user is authenticated before processing
-  await getAuthenticatedUser();
+  // Ensure user is authenticated before processing, unless skipped (for workers)
+  if (!skipAuth) {
+    await getAuthenticatedUser();
+  }
 
   let status: AnalysisStatus = "processing";
   let reason: string | undefined;
