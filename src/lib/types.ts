@@ -25,5 +25,9 @@ export type AnalysisItem = {
     size?: number;
     httpStatus?: number;
   };
+  modelId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalCost?: number;
   discernResult?: PerformDiscernAnalysisOutput;
 };

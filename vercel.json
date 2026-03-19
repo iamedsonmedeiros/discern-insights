@@ -1,0 +1,14 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "functions": {
+    "src/app/api/worker/analyze/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/jobs/start/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}

@@ -19,6 +19,10 @@ export type SummarizeLongContentInput = z.infer<typeof SummarizeLongContentInput
 
 const SummarizeLongContentOutputSchema = z.object({
   summary: z.string().describe('The summarized text content.'),
+  usage: z.object({
+    inputTokens: z.number().describe('Number of input tokens used.'),
+    outputTokens: z.number().describe('Number of output tokens used.'),
+  }).optional().describe('Token usage for this summary.'),
 });
 export type SummarizeLongContentOutput = z.infer<typeof SummarizeLongContentOutputSchema>;
 
@@ -44,7 +48,13 @@ const summarizeLongContentFlow = ai.defineFlow(
     outputSchema: SummarizeLongContentOutputSchema,
   },
   async input => {
-    const {output} = await prompt(input);
-    return output!;
+    const {output, usage} = await prompt(input);
+    return {
+      ...output!,
+      usage: {
+        inputTokens: usage?.inputTokens || 0,
+        outputTokens: usage?.outputTokens || 0,
+      }
+    };
   }
 );

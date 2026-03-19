@@ -2,11 +2,13 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, analyzeTextDirectly } from "@/app/actions";
-import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent } from "@/lib/utils";
+import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus } from "@/app/actions";
+import { logout } from "../../app/(auth)/actions";
+import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv } from "@/lib/utils";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
+import { supabase } from "@/lib/supabase";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -21,6 +23,8 @@ import { AnalysisQueue } from "@/components/app/analysis-queue";
 import { ResultCard } from "@/components/app/result-card";
 import { useI18n } from "@/components/i18n/use-i18n";
 
+const CONCURRENCY_LIMIT = 10;
+
 export function DiscernAnalyzerPage() {
   const { t, setLocale, locale } = useI18n();
   const [items, setItems] = useState<AnalysisItem[]>([]);
@@ -28,33 +32,90 @@ export function DiscernAnalyzerPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
-  const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string|null>(null);
+  const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string | null>(null);
   const [manualAnalysisText, setManualAnalysisText] = useState("");
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const itemsRef = useRef<AnalysisItem[]>([]);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const [pasteContent, setPasteContent] = useState("");
   const { toast } = useToast();
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
 
+  // Background job state
+  const [isSendingToBackground, setIsSendingToBackground] = useState(false);
+  const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
+  const [backgroundJobStatus, setBackgroundJobStatus] = useState<string | null>(null);
+  const [backgroundProgress, setBackgroundProgress] = useState<{ completed: number; failed: number; total: number } | null>(null);
+
   useEffect(() => {
     isProcessingRef.current = isProcessing;
     isAutoModeRef.current = isAutoMode;
-  }, [isProcessing, isAutoMode]);
-  
+    itemsRef.current = items;
+  }, [isProcessing, isAutoMode, items]);
+
   useEffect(() => {
     if ("Notification" in window) {
       setNotificationPermission(Notification.permission);
     }
-  }, []);
+    // Load initial data from Supabase
+    const loadData = async () => {
+      const savedItems = await fetchAnalysisItems();
+      if (savedItems.length > 0) {
+        setItems(savedItems);
+      }
+    };
+    loadData();
+  }, [t]);
+
+  // Supabase Realtime: subscribe to background job progress
+  useEffect(() => {
+    if (!backgroundJobId) return;
+
+    const supabaseClient = supabase;
+    const channel = supabaseClient
+      .channel(`job-${backgroundJobId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "analysis_jobs",
+          filter: `id=eq.${backgroundJobId}`,
+        },
+        (payload: { new: Record<string, unknown> }) => {
+          const job = payload.new as any;
+          setBackgroundJobStatus(job.status);
+          setBackgroundProgress({
+            completed: job.completed_urls,
+            failed: job.failed_urls,
+            total: job.total_urls,
+          });
+          if (job.status === "done" || job.status === "failed") {
+            // Reload items to show updated results
+            fetchAnalysisItems().then((updated) => {
+              if (updated.length > 0) setItems(updated);
+            });
+            if (job.status === "done") {
+              toast({ title: "✅ Análise concluída!", description: "Verifique seu email para o resumo." });
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabaseClient.removeChannel(channel);
+    };
+  }, [backgroundJobId, toast]);
 
   const activeItem = useMemo(
     () => items.find((item) => item.id === activeItemId) || null,
     [items, activeItemId]
   );
-  
+
   const showCompletionNotification = useCallback(() => {
     if (notificationPermission === "granted") {
       new Notification(t('analysisComplete.title'), {
@@ -62,57 +123,78 @@ export function DiscernAnalyzerPage() {
         icon: "/favicon.ico",
       });
     } else {
-       toast({ title: t('analysisComplete.title'), description: t('analysisComplete.body', { count: items.length }) });
+      toast({ title: t('analysisComplete.title'), description: t('analysisComplete.body', { count: items.length }) });
     }
   }, [notificationPermission, items.length, toast, t]);
 
-  const processSingleItem = useCallback(async (index: number) => {
-    if (index >= items.length) {
-      setIsProcessing(false);
-      showCompletionNotification();
+  const processNextAvailable = useCallback(async () => {
+    if (!isProcessingRef.current) return;
+
+    // Find the next item that is 'pending'
+    const nextItem = itemsRef.current.find(item => item.status === 'pending');
+
+    if (!nextItem) {
+      // Check if all items are done (not pending and not processing)
+      const stillProcessing = itemsRef.current.some(item => item.status === 'processing');
+      if (!stillProcessing) {
+        setIsProcessing(false);
+        showCompletionNotification();
+      }
       return;
     }
 
-    setCurrentIndex(index);
-    const itemToProcess = items[index];
-    setActiveItemId(itemToProcess.id);
-
+    // Mark as processing immediately in state and DB
     setItems((prev) =>
       prev.map((item) =>
-        item.id === itemToProcess.id
+        item.id === nextItem.id
           ? { ...item, status: "processing", updatedAt: new Date().toISOString() }
           : item
       )
     );
+    
+    await upsertAnalysisItem({
+      id: nextItem.id,
+      status: "processing",
+      url: nextItem.url,
+      index: nextItem.index
+    });
 
-    const result = await processUrl(itemToProcess.url, locale);
+    try {
+      const result = await processUrl(nextItem.url, locale);
+      const updatedItem = { ...nextItem, ...result, status: result.status, updatedAt: new Date().toISOString() };
+      
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === nextItem.id ? updatedItem : item
+        )
+      );
+      await upsertAnalysisItem(updatedItem);
+    } catch (error) {
+      console.error(`Error processing ${nextItem.url}:`, error);
+      const errorItem = { ...nextItem, status: 'analysis_error' as const, reason: String(error), updatedAt: new Date().toISOString() };
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === nextItem.id ? errorItem : item
+        )
+      );
+      await upsertAnalysisItem(errorItem);
+    }
 
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === itemToProcess.id
-          ? { ...item, ...result, updatedAt: new Date().toISOString() }
-          : item
-      )
-    );
-  }, [items, showCompletionNotification, locale]);
+    // Continue to next if still processing and auto mode is on
+    if (isProcessingRef.current && isAutoModeRef.current) {
+      processNextAvailable();
+    }
+  }, [showCompletionNotification, locale]);
 
 
   useEffect(() => {
-    const lastItem = items[currentIndex];
-    if (isProcessingRef.current && isAutoModeRef.current && lastItem && lastItem.status !== 'processing' && lastItem.status !== 'pending') {
-      const nextIndex = currentIndex + 1;
-      if (nextIndex < items.length) {
-        processSingleItem(nextIndex);
-      } else {
-        setIsProcessing(false);
-        showCompletionNotification();
-      }
-    }
-  }, [items, currentIndex, processSingleItem, showCompletionNotification]);
+    // This effect is only for when items change in a way that might trigger more workers
+    // but the start button handles the initial burst.
+  }, [items]);
 
-  const handlePasteImport = () => {
+  const handlePasteImport = async () => {
     const urls = extractUrlsFromString(pasteContent);
-    importUrls(urls);
+    await importUrls(urls);
     setPasteContent(""); // Clear the textarea after import
   };
 
@@ -121,37 +203,32 @@ export function DiscernAnalyzerPage() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const content = event.target?.result as string;
       const urls = extractUrlsFromString(content);
-      importUrls(urls);
+      await importUrls(urls);
     };
     reader.readAsText(file);
     e.target.value = ''; // Reset file input
   };
 
-  const importUrls = (urls: string[]) => {
+  const importUrls = async (urls: string[]) => {
     const MAX_ITEMS = 200;
-    const existingUrls = new Set(items.map(item => item.url));
-    
-    let newUrls = urls.filter(url => !existingUrls.has(url));
+    let newUrls = [...urls];
 
     if (newUrls.length === 0) {
-      if (urls.length > 0) {
-        toast({ title: "No new URLs", description: "All provided URLs are already in the queue." });
-      }
       return;
     }
 
     const availableSlots = MAX_ITEMS - items.length;
 
     if (availableSlots <= 0) {
-        toast({
-            title: t('importLimit.title'),
-            description: t('importLimit.description'),
-            variant: "destructive",
-        });
-        return;
+      toast({
+        title: t('importLimit.title'),
+        description: t('importLimit.description'),
+        variant: "destructive",
+      });
+      return;
     }
 
     let importedCount = newUrls.length;
@@ -162,7 +239,7 @@ export function DiscernAnalyzerPage() {
       importedCount = availableSlots;
       partialImport = true;
     }
-    
+
     const newItems: AnalysisItem[] = newUrls.map((url, index) => ({
       id: uuidv4(),
       index: items.length + index + 1,
@@ -173,13 +250,27 @@ export function DiscernAnalyzerPage() {
 
     setItems((prev) => [...prev, ...newItems]);
 
-    if (partialImport) {
+    setIsImporting(true);
+    try {
+      await saveImportedUrls(newItems.map(item => ({ id: item.id, url: item.url, index: item.index })));
+
+      if (partialImport) {
         toast({
-            title: t('importLimit.title'),
-            description: t('importLimit.partial', { count: importedCount }),
+          title: t('importLimit.title'),
+          description: t('importLimit.partial', { count: importedCount }),
         });
-    } else {
+      } else {
         toast({ title: t('importSuccess.title', { count: importedCount }), description: t('importSuccess.description') });
+      }
+    } catch (e) {
+      toast({
+        title: "Erro ao salvar no banco",
+        description: "As URLs foram carregadas na tela, mas houve um erro ao sincronizar com o servidor.",
+        variant: "destructive"
+      });
+      console.error(e);
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -191,72 +282,135 @@ export function DiscernAnalyzerPage() {
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
     if (permission === "granted") {
-      toast({ title: t('notifications.activatedTitle'), description: t('notifications.activatedBody')});
+      toast({ title: t('notifications.activatedTitle'), description: t('notifications.activatedBody') });
     }
     return permission;
   }
-  
+
   const handleStartProcessing = async () => {
     if (items.length === 0) {
-      toast({ title: t('queue.emptyTitle'), description: t('queue.emptyDescription')});
+      toast({ title: t('queue.emptyTitle'), description: t('queue.emptyDescription') });
       return;
     }
 
     if (notificationPermission === 'default') {
-       const permission = await requestNotificationPermission();
-       if(permission !== 'granted') {
-           toast({ title: t('notifications.permissionNeededTitle'), description: t('notifications.permissionNeededBody'), variant: "destructive"});
-       }
+      const permission = await requestNotificationPermission();
+      if (permission !== 'granted') {
+        toast({ title: t('notifications.permissionNeededTitle'), description: t('notifications.permissionNeededBody'), variant: "destructive" });
+      }
     }
 
     setIsProcessing(true);
-    processSingleItem(currentIndex);
+    isProcessingRef.current = true; // Update ref immediately
+
+    if (isAutoMode) {
+      // Start multiple workers
+      for (let i = 0; i < CONCURRENCY_LIMIT; i++) {
+        // Delay each worker slightly to avoid hitting rate limits instantly
+        setTimeout(() => {
+          processNextAvailable();
+        }, i * 200);
+      }
+    } else {
+      processNextAvailable();
+    }
   };
-  
+
   const handlePauseProcessing = () => {
     setIsProcessing(false);
   };
 
-  const handleStopProcessing = () => {
+  const handleStopProcessing = async () => {
     setIsProcessing(false);
-    setCurrentIndex(0);
-    setItems(items.map(item => ({...item, status: 'pending'})));
     setActiveItemId(null);
+
+    // UI Update: only revert 'processing' back to 'pending'
+    setItems((prev) =>
+      prev.map((item) =>
+        item.status === "processing" ? { ...item, status: "pending" as const } : item
+      )
+    );
+
+    try {
+      // Single bulk update instead of a loop
+      await resetProcessingStatus();
+    } catch (e) {
+      console.error("Failed to reset processing status in DB:", e);
+    }
+  };
+
+  const handleSendToBackground = async () => {
+    const pendingItems = items.filter(i => i.status === 'pending');
+    if (pendingItems.length === 0) {
+      toast({ title: "Nenhuma URL pendente", description: "Importe URLs antes de enviar para processamento.", variant: "destructive" });
+      return;
+    }
+    setIsSendingToBackground(true);
+    setBackgroundJobId(null);
+    setBackgroundJobStatus(null);
+    setBackgroundProgress(null);
+    try {
+      const res = await fetch('/api/jobs/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: locale }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
+        throw new Error(err.error || 'Erro ao criar job');
+      }
+      const { jobId, totalUrls } = await res.json();
+      setBackgroundJobId(jobId);
+      setBackgroundJobStatus('processing');
+      setBackgroundProgress({ completed: 0, failed: 0, total: totalUrls });
+      toast({ title: "🚀 Enviado!", description: `${totalUrls} URLs em processamento. Você pode fechar o navegador.` });
+    } catch (error) {
+      toast({ title: "Erro ao enviar", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+    } finally {
+      setIsSendingToBackground(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (confirm(t('queue.clearConfirm'))) {
+      await clearAnalysisQueue();
+      setItems([]);
+      setActiveItemId(null);
+    }
   };
 
 
   const handleNext = () => {
-    if (currentIndex + 1 < items.length) {
-      processSingleItem(currentIndex + 1);
-    } else {
-      toast({ title: t('queue.endTitle'), description: t('queue.endDescription') });
-    }
+    processNextAvailable();
   };
 
   const handleOpenManualAnalysis = (itemId: string) => {
     setManualAnalysisTargetId(itemId);
     setIsManualAnalysisOpen(true);
   };
-  
+
   const handleManualAnalysisSubmit = async () => {
     if (!manualAnalysisTargetId || !manualAnalysisText) return;
 
     setIsSubmittingManual(true);
     try {
       const result = await analyzeTextDirectly(manualAnalysisText, locale);
-      setItems(prev => prev.map(item => item.id === manualAnalysisTargetId 
-        ? { ...item, status: 'completed', discernResult: result, reason: 'Manually analyzed', updatedAt: new Date().toISOString() } 
+      const updatedItem = { ...items.find(i => i.id === manualAnalysisTargetId)!, status: 'completed' as const, discernResult: result, reason: 'Manually analyzed', updatedAt: new Date().toISOString() };
+
+      setItems(prev => prev.map(item => item.id === manualAnalysisTargetId
+        ? updatedItem
         : item
       ));
+      await upsertAnalysisItem(updatedItem);
       toast({ title: t('manualAnalysis.successTitle'), description: t('manualAnalysis.successBody') });
       setIsManualAnalysisOpen(false);
       setManualAnalysisText("");
       setManualAnalysisTargetId(null);
-    } catch(error) {
-      toast({ 
-        title: t('manualAnalysis.errorTitle'), 
-        description: error instanceof Error ? error.message : String(error), 
-        variant: "destructive" 
+    } catch (error) {
+      toast({
+        title: t('manualAnalysis.errorTitle'),
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive"
       });
     } finally {
       setIsSubmittingManual(false);
@@ -266,7 +420,7 @@ export function DiscernAnalyzerPage() {
 
   const processedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing'), [items]);
   const completedItems = useMemo(() => items.filter(item => item.status === 'completed' && item.discernResult), [items]);
-  
+
   const handleGenerateArticle = async () => {
     if (completedItems.length === 0) {
       toast({ title: t('article.noResultsTitle'), description: t('article.noResultsDescription') });
@@ -283,42 +437,21 @@ export function DiscernAnalyzerPage() {
         throw new Error(t('article.emptyError'));
       }
     } catch (error) {
-       toast({ title: t('article.errorTitle'), description: error instanceof Error ? error.message : t('article.unknownError'), variant: "destructive"});
+      toast({ title: t('article.errorTitle'), description: error instanceof Error ? error.message : t('article.unknownError'), variant: "destructive" });
     } finally {
-       setIsGeneratingArticle(false);
+      setIsGeneratingArticle(false);
     }
   };
 
   const getStartButtonText = () => {
-      if (currentIndex > 0 && !isProcessing) return t('controls.continue');
-      return t('controls.start');
+    const hasCompleted = items.some(i => i.status === 'completed');
+    if (hasCompleted && !isProcessing) return t('controls.continue');
+    return t('controls.start');
   }
 
   return (
-    <>
-    <div className="flex flex-col min-h-screen font-sans">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="container mx-auto flex items-center justify-between p-4">
-          <div>
-            <h1 className="text-2xl font-bold text-primary">DISCERN Insights</h1>
-            <p className="text-muted-foreground">{t('app.subtitle')}</p>
-          </div>
-          <div className="flex items-center gap-4">
-            {notificationPermission !== 'granted' && (
-              <Button variant="outline" size="sm" onClick={requestNotificationPermission}>
-                  <Bell className="mr-2 h-4 w-4" />
-                  {t('controls.activateNotifications')}
-              </Button>
-            )}
-             <div className="flex items-center gap-2">
-                <Button variant={locale === 'pt-BR' ? 'default' : 'outline'} size="sm" onClick={() => setLocale('pt-BR')}>PT</Button>
-                <Button variant={locale === 'en' ? 'default' : 'outline'} size="sm" onClick={() => setLocale('en')}>EN</Button>
-             </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-grow container mx-auto p-4">
+    <div className="flex flex-col font-sans">
+      <main className="flex-grow container mx-auto p-4 pt-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 flex flex-col gap-8">
             <Card>
@@ -329,20 +462,28 @@ export function DiscernAnalyzerPage() {
               <CardContent>
                 <Tabs defaultValue="paste">
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="paste"><LinkIcon className="mr-2 h-4 w-4"/> {t('import.paste')}</TabsTrigger>
-                    <TabsTrigger value="upload"><FileUp className="mr-2 h-4 w-4"/> {t('import.upload')}</TabsTrigger>
+                    <TabsTrigger value="paste"><LinkIcon className="mr-2 h-4 w-4" /> {t('import.paste')}</TabsTrigger>
+                    <TabsTrigger value="upload"><FileUp className="mr-2 h-4 w-4" /> {t('import.upload')}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="paste" className="mt-4">
-                      <Textarea 
-                        value={pasteContent}
-                        onChange={(e) => setPasteContent(e.target.value)}
-                        name="urls"
-                        placeholder={t('import.placeholder')}
-                        rows={6}
-                      />
-                      <Button type="button" onClick={handlePasteImport} className="mt-4 w-full">
-                        {t('import.button')}
-                      </Button>
+                    <Textarea
+                      value={pasteContent}
+                      onChange={(e) => setPasteContent(e.target.value)}
+                      name="urls"
+                      placeholder={t('import.placeholder')}
+                      rows={6}
+                      data-testid="import-textarea"
+                    />
+                    <Button
+                      type="button"
+                      onClick={handlePasteImport}
+                      className="mt-4 w-full"
+                      data-testid="import-button"
+                      disabled={isImporting || !pasteContent}
+                    >
+                      {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {t('import.button')}
+                    </Button>
                   </TabsContent>
                   <TabsContent value="upload" className="mt-4">
                     <Input id="csv-upload" type="file" accept=".csv,.txt" onChange={handleFileImport} />
@@ -353,102 +494,148 @@ export function DiscernAnalyzerPage() {
             </Card>
 
             <Card>
-                <CardHeader>
-                  <CardTitle>{t('controls.title')}</CardTitle>
-                  <CardDescription>{t('controls.description')}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="auto-mode" className="flex flex-col space-y-1">
-                        <span>{t('controls.autoMode')}</span>
-                        <span className="font-normal leading-snug text-muted-foreground">
-                          {t('controls.autoModeDescription')}
-                        </span>
-                      </Label>
-                      <Switch id="auto-mode" checked={isAutoMode} onCheckedChange={setIsAutoMode} />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                       <Button onClick={isProcessing ? handlePauseProcessing : handleStartProcessing} disabled={items.length === 0}>
-                        {isProcessing ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
-                        {isProcessing ? t('controls.pause') : getStartButtonText()}
-                      </Button>
-                      <Button onClick={handleStopProcessing} disabled={!isProcessing && currentIndex === 0} variant="destructive">
-                        <Square className="mr-2 h-4 w-4" /> {t('controls.stop')}
-                      </Button>
-                      <div className="col-span-2">
-                        <Button onClick={handleNext} disabled={isProcessing && isAutoMode || items.length === 0 || currentIndex >= items.length - 1} className="w-full">
-                          <SkipForward className="mr-2 h-4 w-4"/> {t('controls.next')}
-                        </Button>
+              <CardHeader>
+                <CardTitle>{t('controls.title')}</CardTitle>
+                <CardDescription>{t('controls.description')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="auto-mode" className="flex flex-col space-y-1">
+                    <span>{t('controls.autoMode')}</span>
+                    <span className="font-normal leading-snug text-muted-foreground">
+                      {t('controls.autoModeDescription')}
+                    </span>
+                  </Label>
+                  <Switch id="auto-mode" checked={isAutoMode} onCheckedChange={setIsAutoMode} data-testid="auto-mode-switch" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button onClick={isProcessing ? handlePauseProcessing : handleStartProcessing} disabled={items.length === 0} data-testid="start-pause-button">
+                    {isProcessing ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+                    {isProcessing ? t('controls.pause') : getStartButtonText()}
+                  </Button>
+                  <Button onClick={handleStopProcessing} disabled={!isProcessing && !items.some(i => i.status === 'processing')} variant="destructive" data-testid="stop-button">
+                    <Square className="mr-2 h-4 w-4" /> {t('controls.stop')}
+                  </Button>
+                  <div className="col-span-2 flex gap-2">
+                    <Button onClick={handleNext} disabled={(isProcessing && isAutoMode) || items.length === 0 || !items.some(i => i.status === 'pending')} className="flex-1" data-testid="next-button">
+                      <SkipForward className="mr-2 h-4 w-4" /> {t('controls.next')}
+                    </Button>
+                    <Button onClick={handleClearAll} variant="outline" disabled={items.length === 0} className="flex-1" data-testid="clear-all-button">
+                      {t('controls.clearAll')}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Background processing section */}
+                <div className="border-t pt-4 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Processar em segundo plano</p>
+                    <p className="text-xs text-muted-foreground">Envie para o servidor e feche o navegador. Você receberá um email ao terminar.</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleSendToBackground}
+                    disabled={isSendingToBackground || backgroundJobStatus === 'processing' || !items.some(i => i.status === 'pending')}
+                    data-testid="background-process-button"
+                  >
+                    {isSendingToBackground
+                      ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      : backgroundJobStatus === 'done'
+                        ? <CheckCircle2 className="mr-2 h-4 w-4 text-green-500" />
+                        : <Send className="mr-2 h-4 w-4" />}
+                    {isSendingToBackground
+                      ? "Enviando..."
+                      : backgroundJobStatus === 'processing'
+                        ? "Processando no servidor..."
+                        : backgroundJobStatus === 'done'
+                          ? "Concluído!"
+                          : "Enviar para servidor"}
+                  </Button>
+                  {backgroundProgress && backgroundJobStatus === 'processing' && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>{backgroundProgress.completed + backgroundProgress.failed} de {backgroundProgress.total} processadas</span>
+                        <span>{Math.round(((backgroundProgress.completed + backgroundProgress.failed) / backgroundProgress.total) * 100)}%</span>
+                      </div>
+                      <div className="w-full bg-secondary rounded-full h-2">
+                        <div
+                          className="bg-primary h-2 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.round(((backgroundProgress.completed + backgroundProgress.failed) / backgroundProgress.total) * 100)}%` }}
+                        />
                       </div>
                     </div>
-                </CardContent>
+                  )}
+                </div>
+              </CardContent>
             </Card>
 
             <Card>
-                <CardHeader>
-                  <CardTitle>{t('export.title')}</CardTitle>
-                  <CardDescription>{t('export.description')}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                    <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
-                    <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.json')}</Button>
-                    <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>
-                      <FileText className="mr-2 h-4 w-4"/>
-                      {t('export.docx')}
-                    </Button>
-                    <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
-                      {isGeneratingArticle ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
-                      ) : (
-                        <BookMarked className="mr-2 h-4 w-4"/>
-                      )}
-                      {isGeneratingArticle ? t('article.generating') : t('article.create')}
-                    </Button>
-                </CardContent>
+              <CardHeader>
+                <CardTitle>{t('export.title')}</CardTitle>
+                <CardDescription>{t('export.description')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
+                <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.json')}</Button>
+                <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  {t('export.docx')}
+                </Button>
+                <Button variant="outline" className="w-full" onClick={() => exportScoreSheetCsv(processedItems, 'discern_scores_matrix')} disabled={processedItems.length === 0}>
+                  {t('export.scores') || 'Planilha de Scores (Matriz)'}
+                </Button>
+                <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
+                  {isGeneratingArticle ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <BookMarked className="mr-2 h-4 w-4" />
+                  )}
+                  {isGeneratingArticle ? t('article.generating') : t('article.create')}
+                </Button>
+              </CardContent>
             </Card>
           </div>
 
           <div className="lg:col-span-2 flex flex-col gap-8">
             <AnalysisQueue items={items} activeItemId={activeItemId} onRowClick={setActiveItemId} />
-            <ResultCard 
-              activeItem={activeItem} 
+            <ResultCard
+              activeItem={activeItem}
               isLoading={isProcessing && activeItem?.status === 'processing'}
               onManualAnalysisClick={handleOpenManualAnalysis}
             />
           </div>
         </div>
       </main>
-    </div>
-    
-    <Dialog open={isManualAnalysisOpen} onOpenChange={setIsManualAnalysisOpen}>
+
+      <Dialog open={isManualAnalysisOpen} onOpenChange={setIsManualAnalysisOpen}>
         <DialogContent className="sm:max-w-[625px]">
-            <DialogHeader>
-                <DialogTitle>{t('manualAnalysis.title')}</DialogTitle>
-                <DialogDescription>
-                    {t('manualAnalysis.description')}
-                </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-                <Textarea 
-                    placeholder={t('manualAnalysis.placeholder')} 
-                    rows={15}
-                    value={manualAnalysisText}
-                    onChange={(e) => setManualAnalysisText(e.target.value)}
-                />
-            </div>
-            <DialogFooter>
-                <Button 
-                  onClick={handleManualAnalysisSubmit} 
-                  disabled={!manualAnalysisText || isSubmittingManual}
-                >
-                  {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  {t('manualAnalysis.submit')}
-                </Button>
-            </DialogFooter>
+          <DialogHeader>
+            <DialogTitle>{t('manualAnalysis.title')}</DialogTitle>
+            <DialogDescription>
+              {t('manualAnalysis.description')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <Textarea
+              placeholder={t('manualAnalysis.placeholder')}
+              rows={15}
+              value={manualAnalysisText}
+              onChange={(e) => setManualAnalysisText(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleManualAnalysisSubmit}
+              disabled={!manualAnalysisText || isSubmittingManual}
+            >
+              {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {t('manualAnalysis.submit')}
+            </Button>
+          </DialogFooter>
         </DialogContent>
-    </Dialog>
-    </>
+      </Dialog>
+    </div>
   );
 }
 
-    

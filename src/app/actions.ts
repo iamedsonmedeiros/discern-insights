@@ -4,19 +4,185 @@ import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
 import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput } from "@/lib/types";
+import { createClient } from "@/lib/supabase-server";
+import { redis, normalizeUrlForCache, isRedisConfigured } from "@/lib/redis";
+// Reverted pdf-parse
+const MODEL_ID = 'googleai/gemini-2.5-flash';
+const COST_PER_1M_INPUT = 0.075;
+const COST_PER_1M_OUTPUT = 0.30;
+
+// --- Helper to get authenticated user ---
+async function getAuthenticatedUser() {
+  const supabase = await createClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) {
+    throw new Error("Unauthorized: Please log in to perform this action.");
+  }
+  return { supabase, user };
+}
+
+// --- Database Operations ---
+
+export async function fetchAnalysisItems(): Promise<AnalysisItem[]> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+
+    const { data, error } = await supabase
+      .from('analysis_items')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('index', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching items from Supabase:', error);
+      return [];
+    }
+
+    return (data || []).map(item => ({
+      id: item.id,
+      url: item.url,
+      index: item.index,
+      status: item.status as AnalysisStatus,
+      reason: item.reason,
+      meta: item.meta,
+      discernResult: item.discern_result,
+      updatedAt: item.updated_at
+    }));
+  } catch (e) {
+    console.error("fetchAnalysisItems failed:", e);
+    return [];
+  }
+}
+
+export async function upsertAnalysisItem(item: Partial<AnalysisItem>) {
+  const { supabase, user } = await getAuthenticatedUser();
+
+  const dataToUpsert: any = {
+    id: item.id,
+    user_id: user.id,
+    model_id: item.modelId,
+    input_tokens: item.inputTokens,
+    output_tokens: item.outputTokens,
+    total_cost: item.totalCost,
+    updated_at: new Date().toISOString()
+  };
+
+  // Only include defined fields to avoid setting required columns to null
+  if (item.url !== undefined) dataToUpsert.url = item.url;
+  if (item.index !== undefined) dataToUpsert.index = item.index;
+  if (item.status !== undefined) dataToUpsert.status = item.status;
+  if (item.reason !== undefined) dataToUpsert.reason = item.reason;
+  if (item.meta !== undefined) dataToUpsert.meta = item.meta;
+  if (item.discernResult !== undefined) dataToUpsert.discern_result = item.discernResult;
+
+  const { data, error } = await supabase
+    .from('analysis_items')
+    .upsert(dataToUpsert)
+    .select();
+
+  if (error) {
+    console.error('Error upserting item in Supabase:', error);
+    throw error;
+  }
+  return data;
+}
+
+export async function clearAnalysisQueue() {
+  const { supabase, user } = await getAuthenticatedUser();
+
+  const { error } = await supabase
+    .from('analysis_items')
+    .delete()
+    .eq('user_id', user.id); // Only delete items belonging to this user
+
+  if (error) {
+    console.error('Error clearing queue in Supabase:', error);
+    throw error;
+  }
+}
+
+export async function resetAnalysisQueue() {
+  const { supabase, user } = await getAuthenticatedUser();
+
+  const { error } = await supabase
+    .from('analysis_items')
+    .update({
+      status: 'pending',
+      reason: null,
+      discern_result: null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('user_id', user.id);
+
+  if (error) {
+    console.error('Error resetting queue in Supabase:', error);
+    throw error;
+  }
+}
+
+export async function resetProcessingStatus() {
+  const { supabase, user } = await getAuthenticatedUser();
+
+  const { error } = await supabase
+    .from('analysis_items')
+    .update({
+      status: 'pending',
+      updated_at: new Date().toISOString()
+    })
+    .eq('user_id', user.id)
+    .eq('status', 'processing');
+
+  if (error) {
+    console.error('Error resetting processing status in Supabase:', error);
+    throw error;
+  }
+}
+
+export async function saveImportedUrls(items: { id: string, url: string, index: number }[]) {
+  const { supabase, user } = await getAuthenticatedUser();
+
+  const itemsToInsert = items.map(item => ({
+    id: item.id,
+    url: item.url,
+    index: item.index,
+    status: 'pending',
+    user_id: user.id,
+    updated_at: new Date().toISOString()
+  }));
+
+  const { data, error } = await supabase
+    .from('analysis_items')
+    .insert(itemsToInsert)
+    .select();
+
+  if (error) {
+    console.error('Error inserting URLs in Supabase:', error);
+    throw error;
+  }
+  return data;
+}
+
+// --- Content Processing & Analysis ---
 
 function htmlToText(html: string): string {
+  // If content looks like Jina AI Markdown (starts with title or URL)
+  // We can do some minor cleaning but mostly Markdown is good for the AI.
+  if (html.includes('Markdown Content:') || html.startsWith('# ') || html.includes('---')) {
+    // Just remove some Jina specific headers if they exist
+    return html.replace(/^(Title: .*?\n|URL Source: .*?\n|Markdown Content:.*?\n)/gm, "").trim();
+  }
+
   // Remove script, style, and head elements
-  let cleanHtml = html.replace(/<script[^>]*>.*?<\/script>/gis, "");
-  cleanHtml = cleanHtml.replace(/<style[^>]*>.*?<\/style>/gis, "");
-  cleanHtml = cleanHtml.replace(/<head[^>]*>.*?<\/head>/gis, "");
-  
+  let cleanHtml = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+  cleanHtml = cleanHtml.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+  cleanHtml = cleanHtml.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "");
+
   // Convert block-level elements to newlines
   cleanHtml = cleanHtml.replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, "\n");
-  
+
   // Remove all remaining HTML tags
   cleanHtml = cleanHtml.replace(/<[^>]+>/g, " ");
-  
+
   // Replace multiple newlines/spaces with a single one
   cleanHtml = cleanHtml.replace(/(\s*\n\s*)+/g, "\n");
   cleanHtml = cleanHtml.replace(/[ \t]+/g, " ");
@@ -36,71 +202,129 @@ export async function processUrl(
   url: string,
   language: string = 'pt-BR'
 ): Promise<Pick<AnalysisItem, "status" | "reason" | "meta" | "discernResult">> {
+  // Ensure user is authenticated before processing
+  await getAuthenticatedUser();
+
   let status: AnalysisStatus = "processing";
   let reason: string | undefined;
   let meta: AnalysisItem["meta"] = {};
   let discernResult: AnalysisItem["discernResult"] | undefined;
   const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
 
+  // --- 1. Cache Check ---
+  const normalizedUrl = normalizeUrlForCache(url);
+  const cacheKey = `analysis:${normalizedUrl}`;
+
+  if (isRedisConfigured()) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        console.log(`Cache hit for ${url}`);
+        // If it's cached, it must be the full result or a special state
+        return cached as any; 
+      }
+    } catch (e) {
+      console.warn("Redis read failed, continuing without cache:", e);
+    }
+  }
+
   // Immediately check for direct YouTube/Vimeo/Instagram/TikTok URLs
   if (/youtube\.com|youtu\.be|vimeo\.com|instagram\.com\/reel\/|tiktok\.com/.test(url)) {
-      return {
-          status: "not_eligible_video",
-          reason: "DISCERN does not analyze videos",
-          meta,
-      };
+    return {
+      status: "not_eligible_video",
+      reason: "DISCERN does not analyze videos",
+      meta,
+    };
   }
 
-  // Immediately check for direct PDF URLs
+  // Immediately check for direct PDF URLs by extension
   if (url.toLowerCase().endsWith('.pdf')) {
-      return {
-          status: "not_eligible_pdf",
-          reason: "DISCERN does not analyze PDFs",
-          meta,
-      };
+    return {
+      status: "not_eligible_pdf",
+      reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
+      meta,
+    };
   }
 
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive"
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(25000),
-    });
+    // Try Jina AI first for robust extraction (JS-heavy sites, clean markdown)
+    let html = "";
+    try {
+      const jinaUrl = `https://r.jina.ai/${url}`;
+      const jinaResponse = await fetch(jinaUrl, {
+        headers: { "X-Return-Format": "markdown" },
+        signal: AbortSignal.timeout(15000),
+      });
 
-    meta.httpStatus = response.status;
+      if (jinaResponse.ok) {
+        html = await jinaResponse.text();
+        console.log(`Successfully scraped using Jina AI: ${url}`);
+      }
+    } catch (jinaError) {
+      console.warn(`Jina AI scraping failed for ${url}, falling back to native fetch.`, jinaError);
+    }
 
-    if (!response.ok) {
+    // Fallback to native fetch if Jina fails or returned empty
+    if (!html) {
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+          "Accept-Encoding": "gzip, deflate, br",
+          "Cache-Control": "max-age=0",
+          "DNT": "1",
+          "Upgrade-Insecure-Requests": "1"
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+
+      meta.httpStatus = response.status;
+
+      if (!response.ok) {
+        return {
+          status: "unavailable_offline",
+          reason: `HTTP Error: ${response.status} ${response.statusText}`,
+          meta,
+        };
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/pdf")) {
+        return {
+          status: "not_eligible_pdf",
+          reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
+          meta,
+        };
+      } else {
+        html = await response.text();
+
+      }
+    }
+
+    // Check for security verification pages (e.g. Cloudflare, generic protection) - AFTER all scraping attempts
+    const isSecurityPage = /verify you are human|estabelecendo uma conexão segura|verifique se você é humano|bot verification|security check|request id/i.test(html);
+    if (isSecurityPage && html.length < 10000) {
       return {
-        status: "unavailable_offline",
-        reason: `HTTP Error: ${response.status} ${response.statusText}`,
+        status: "scraping_error",
+        reason: "A página retornou uma verificação de segurança (Bot Protection). Faça a análise manual dessa página.",
         meta,
       };
     }
-
-    const contentType = response.headers.get("content-type") || "";
-    if (contentType.includes("application/pdf")) {
-      return {
-        status: "not_eligible_pdf",
-        reason: "DISCERN does not analyze PDFs",
-        meta,
-      };
-    }
-
-    const html = await response.text();
     meta.size = html.length;
-    
-    const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
-    meta.title = titleMatch ? titleMatch[1] : "No title";
+
+    if (!meta.title) {
+      const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
+      meta.title = titleMatch ? titleMatch[1] : "No title";
+    }
 
     let textContent = htmlToText(html);
-    
+
     const hasVideoEmbed = html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html);
     if (hasVideoEmbed && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
       return {
@@ -122,6 +346,8 @@ export async function processUrl(
       try {
         const summaryResult = await summarizeLongContent({ text: textContent, language });
         textContent = summaryResult.summary;
+        totalInputTokens += summaryResult.usage?.inputTokens || 0;
+        totalOutputTokens += summaryResult.usage?.outputTokens || 0;
       } catch (e) {
         console.error("Summarization failed:", e);
         // Continue with truncated content if summarization fails
@@ -131,6 +357,8 @@ export async function processUrl(
 
     try {
       discernResult = await performDiscernAnalysis({ text: textContent, language });
+      totalInputTokens += discernResult.usage?.inputTokens || 0;
+      totalOutputTokens += discernResult.usage?.outputTokens || 0;
       status = "completed";
     } catch (e) {
       console.error("DISCERN analysis failed:", e);
@@ -151,13 +379,42 @@ export async function processUrl(
     }
   }
 
-  return { status, reason, meta, discernResult };
+  const inputCost = (totalInputTokens / 1000000) * COST_PER_1M_INPUT;
+  const outputCost = (totalOutputTokens / 1000000) * COST_PER_1M_OUTPUT;
+  const totalCost = inputCost + outputCost;
+
+  const finalResult = { 
+    status, 
+    reason, 
+    meta, 
+    discernResult,
+    modelId: MODEL_ID,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    totalCost: totalCost
+  };
+
+  // --- 4. Cache Save ---
+  if (status === "completed" && isRedisConfigured()) {
+    try {
+      // Cache the result for 7 days (604800 seconds)
+      await redis.set(cacheKey, finalResult, { ex: 604800 });
+      console.log(`Saved result to cache for ${url}`);
+    } catch (e) {
+      console.warn("Redis write failed:", e);
+    }
+  }
+
+  return finalResult;
 }
 
 export async function analyzeTextDirectly(
   text: string,
   language: string = 'pt-BR'
 ): Promise<PerformDiscernAnalysisOutput> {
+  // Ensure user is authenticated
+  await getAuthenticatedUser();
+
   let textContent = text;
   if (textContent.length > 30000) {
     try {
@@ -168,7 +425,7 @@ export async function analyzeTextDirectly(
       textContent = textContent.substring(0, 30000);
     }
   }
-  
+
   try {
     const discernResult = await performDiscernAnalysis({ text: textContent, language });
     return discernResult;
@@ -181,6 +438,9 @@ export async function analyzeTextDirectly(
 
 
 export async function generateArticleAction({ items }: { items: AnalysisItem[] }) {
+  // Ensure user is authenticated
+  await getAuthenticatedUser();
+
   try {
     const result = await createScientificArticle({ items });
     return result;

@@ -5,3 +5,6 @@ runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
+  # Allow long-running background jobs (up to 300 seconds for 100–150 URL analysis)
+  timeoutSeconds: 300
+  memoryMiB: 1024

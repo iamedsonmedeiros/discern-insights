@@ -6,59 +6,77 @@ The application is built with a modern web stack, leveraging Next.js for the fro
 
 ## Core Features
 
-*   **URL Import**: Import URLs for analysis by pasting a list directly into a textarea or by uploading a `.csv` file. The application automatically deduplicates URLs.
-*   **Content Eligibility & Extraction**:
-    *   Fetches content from each URL by simulating a Google Bot to bypass `robots.txt` restrictions.
+*   **URL Import**: Import URLs for analysis by pasting a list directly into a textarea or by uploading a `.csv` file. The application preserves all imported URLs, including duplicates, to support systematic review processes.
+*   **Content Eligibility & Robust Scraping**:
+    *   **Jina AI Integration**: Uses `r.jina.ai` to extract clean Markdown content from modern websites, including JS-heavy Single Page Applications.
+    *   **Fallback Logic**: Automatically falls back to a native `fetch` (mimicking Google Bot) if the primary scraper fails.
     *   Identifies and filters out non-eligible content like PDFs and videos.
-    *   Extracts clean, readable text from the HTML of eligible pages.
 *   **AI-Powered Summarization**: For articles with text content exceeding 30,000 characters, the tool uses an AI flow to summarize the content, ensuring the core information is retained for analysis.
 *   **DISCERN Analysis**:
     *   An AI flow evaluates the extracted text against the 16 items of the DISCERN instrument.
     *   Generates a score (1-5) and a detailed justification for each of the 16 items.
     *   Produces an executive summary, key observations, and actionable recommendations for improvement.
+*   **Stats Dashboard**:
+    *   **Personal Analytics**: KPIs like average quality score, total analyses, and daily trends.
+    *   **Admin Dashboard**: Global view of all system data, including domains ranking and cumulative statistics.
+*   **User Authentication & Persistence**:
+    *   Secure login and signup powered by **Supabase Auth**.
+    *   Persistent storage for all analysis results in a **Supabase PostgreSQL** database.
+    *   Role-based access (Regular User vs. Admin).
 *   **Processing Control**:
     *   **Automatic Mode**: Process the entire queue of URLs sequentially without user intervention.
     *   **Manual Mode**: Process one URL at a time, allowing the user to trigger the next analysis.
     *   The ability to start, pause, and continue the analysis queue.
-*   **Internationalization (i18n)**: The entire user interface and AI analysis output are available in both **English (en)** and **Brazilian Portuguese (pt-BR)**, with a simple toggle in the header.
-*   **Data Export**:
-    *   Export the complete analysis results for all processed URLs into `CSV`, `JSON`, or `DOCX` formats.
-    *   The DOCX export is a well-formatted report, suitable for sharing and archiving.
-*   **Scientific Article Generation**: With a single click, the application uses AI to synthesize the analysis data from all completed items into a formatted, publication-ready scientific manuscript, adhering to the standards of the *Journal of Coloproctology*.
-*   **Browser Notifications**: If permission is granted, the application will send a native browser notification to alert the user when the entire analysis queue has been completed.
+*   **Internationalization (i18n)**: The entire user interface and AI analysis output are available in both **English (en)** and **Brazilian Portuguese (pt-BR)**.
+*   **Data Export**: Export results to `CSV`, `JSON`, or `DOCX` (well-formatted scientific report).
+*   **Scientific Article Generation**: AI synthesis of all completed items into a publication-ready manuscript.
 
 ---
 
-## How It Works: Technical Architecture
+## 🗺️ Navegação e Rotas
 
-The application is a standalone Next.js project that intelligently combines a client-side user interface with powerful server-side actions and AI processing.
+A aplicação utiliza rotas protegidas e baseadas em cargos:
 
-### 1. Frontend (`src/components/pages/discern-analyzer-page.tsx`)
+-   **`/` (Raiz)**: Detecta o estado de autenticação e redireciona automaticamente para o Dashboard ou Login.
+-   **`/login` e `/signup`**: Portais de acesso e criação de conta.
+-   **`/dashboard`**: A central da plataforma, organizada em abas:
+    -   **🔬 Analisador**: A ferramenta principal de análise de URLs.
+    -   **📊 Estatísticas**: 
+        -   **Visão Usuário**: Gráficos e KPIs das suas próprias análises.
+        -   **Visão Admin (Painel Administrativo)**: Ativada automaticamente para usuários com a role `admin`, permitindo a visualização de métricas globais de todo o sistema.
 
-*   **Framework**: Built with **Next.js** and **React** using the App Router. All components are React Server Components (`RSC`) by default, with client-side interactivity enabled via the `"use client";` directive.
-*   **State Management**: Client-side state is managed using React hooks (`useState`, `useEffect`, `useMemo`, etc.). There is no external state management library. State is managed within the main page component, `DiscernAnalyzerPage`.
-*   **UI Components**: The UI is built using **ShadCN/UI**, a collection of accessible and reusable components built on Radix UI and styled with **Tailwind CSS**.
-*   **Internationalization**: A custom i18n system (`src/components/i18n`) uses a React Context Provider and a `useI18n` hook to deliver translations from JSON files (`src/components/i18n/translations.ts`).
+---
 
-### 2. Backend Logic (Next.js Server Actions)
+## 🧪 Methodology & Technical Architecture
 
-*   **Entry Point**: All backend logic is triggered via **Next.js Server Actions** defined in `src/app/actions.ts`. These are functions marked with `"use server";` that can be called directly from client components.
-*   **`processUrl(url, language)`**: This is the core action for a single URL analysis.
-    1.  It uses `fetch` with a `User-Agent` header mimicking 'Googlebot/2.1' to retrieve the page's HTML.
-    2.  It checks the `content-type` header to filter out PDFs.
-    3.  It uses a regex-based function (`htmlToText`) to strip HTML tags and extract plain text. It also looks for video embeds.
-    4.  If the text is too long, it calls the `summarizeLongContent` AI flow.
-    5.  It then calls the `performDiscernAnalysis` AI flow with the final text content.
-    6.  It returns the complete analysis result or an error status.
-*   **`generateArticleAction({ items })`**: This action takes the successfully analyzed items, calls the `createScientificArticle` AI flow, and returns the generated manuscript content.
+The application implements a systematic, AI-driven pipeline designed for the rigorous and reproducible evaluation of online health information.
 
-### 3. AI Integration (Google Genkit)
+### 1. Data Collection & Screening
+The system supports both individual and batch URL ingestion (via CSV/Text). Before evaluation, an automated screening process identifies and excludes technically incompatible formats—such as direct video files or standalone PDFs—ensuring the uniformity and integrity of the study sample.
 
-*   **Framework**: AI capabilities are powered by **Genkit**, an open-source framework for building AI-powered applications. The Genkit configuration is located in `src/ai/genkit.ts`.
-*   **AI Flows (`src/ai/flows/`)**: Each distinct AI task is encapsulated in a "flow". A flow is a server-side function that orchestrates calls to AI models, defines input/output schemas using **Zod**, and can include other business logic.
-    *   **`summarize-long-content.ts`**: Takes long text and a target language, and returns a concise summary.
-    *   **`perform-discern-analysis.ts`**: The main analysis engine. It takes text content and a language, and uses a structured prompt with an output schema to force the model to return a JSON object containing the 16 scores, justifications, summary, and more.
-    *   **`create-scientific-article.ts`**: Takes the collected analysis data, formats it into a detailed prompt, and instructs the AI model to generate a full scientific article based on a strict template inspired by the *Journal of Coloproctology*.
+### 2. Content Extraction & Purification
+To ensure high-precision assessment by the AI model, the platform employs a specialized engine that isolates the primary text from web pages. This process removes irrelevant "noise"—including advertisements, navigation menus, and pop-ups—that could otherwise introduce bias or distract the AI. Robust architectural layers ensure that content is correctly retrieved even from modern, complex websites with technical bot protections.
+
+### 3. Contextual Refinement for Lengthy Content
+For long-form health articles (exceeding 30,000 characters), the system performs an initial **Intelligent Synthesis**. This stage condenses the material while strictly preserving all essential clinical information and nuances. This optimization allows the AI to evaluate the material without losing the depth required for accurate scoring against the DISCERN protocol.
+
+### 2. Analysis Engine (DISCERN Protocol)
+The core logic is an AI "Evaluator Agent" powered by **Google Gemini 2.5 Flash**, orchestrated by **Google Genkit**.
+*   **Systematic Evaluation**: Strictly applies the 16 validated criteria from the **DISCERN instrument** (University of Oxford).
+*   **Evidence-Based Justification**: For every score (1-5), the model generates a text-based justification citing observations from the source text.
+*   **Domain Aggregation**: Results are categorized into *Reliability* (items 1-8), *Quality of Treatment Options* (items 9-15), and *Overall Quality* (item 16).
+
+### 3. Asynchronous Processing & Scalability
+To support large-scale systematic reviews (e.g., automated analysis of 150+ URLs), the system employs a robust server-side architecture:
+*   **Background Task Management**: Analysis orchestration is handled entirely on the server. This ensures that processing continues independently of the user's local connection, allowing the browser tab to be closed without interrupting the workflow.
+*   **Sequential Batching & Automated Notifications**: The platform organizes the queue into continuous sequential batches. Once the entire study sample is processed, the system automatically triggers an email notification to the researcher, eliminating the need for constant manual monitoring.
+*   **Secure Persistence & Live Progress Tracking**: All findings are stored in a secure, high-performance database. Users can track the status of their analysis through a dynamic progress bar that provides real-time updates as the AI completes each evaluation in the queue.
+
+### 4. Technical Stack
+*   **Frontend**: Next.js (App Router), ShadCN/UI, Tailwind CSS, Lucide.
+*   **Backend**: Next.js Server Actions & API Routes, Supabase (Auth/Database/Realtime).
+*   **AI Framework**: Google Genkit + Gemini 2.5 Flash.
+*   **Cloud Infrastructure**: Vercel (Hobby/Pro), Upstash (Redis/QStash).
 
 ---
 
@@ -70,40 +88,18 @@ Here is a breakdown of the most important files and directories in the project.
 /
 ├── src/
 │   ├── app/
-│   │   ├── actions.ts        # Next.js Server Actions (backend logic).
-│   │   ├── globals.css       # Global styles and Tailwind CSS theme variables.
-│   │   ├── layout.tsx        # Root layout for the application.
-│   │   └── page.tsx          # The main entry page of the app.
-│   │
-│   ├── ai/
-│   │   ├── genkit.ts         # Genkit configuration and initialization.
-│   │   └── flows/            # Directory for all Genkit AI flows.
-│   │       ├── perform-discern-analysis.ts
-│   │       ├── summarize-long-content.ts
-│   │       └── create-scientific-article.ts
-│   │
+│   │   ├── actions.ts        # Backend logic & Scraping.
+│   │   ├── actions-analytics.ts # Stats & Admin calculations.
+│   │   ├── dashboard/        # Main dashboard with tabs.
+│   │   └── (auth)/           # Login/Signup flows.
 │   ├── components/
-│   │   ├── app/              # Application-specific components.
-│   │   │   ├── analysis-queue.tsx
-│   │   │   └── result-card.tsx
-│   │   ├── pages/
-│   │   │   └── discern-analyzer-page.tsx # Main component orchestrating the UI.
-│   │   ├── ui/               # Reusable UI components from ShadCN.
-│   │   └── i18n/             # Internationalization components and translations.
-│   │       ├── i18n-provider.tsx
-│   │       ├── translations.ts
-│   │       └── use-i18n.ts
-│   │
-│   ├── hooks/
-│   │   └── use-toast.ts      # Hook for showing toast notifications.
-│   │
+│   │   ├── app/              # AnalysisQueue, ResultCard, StatsDashboard.
+│   │   └── pages/            # DiscernAnalyzerPage.
 │   └── lib/
-│       ├── types.ts          # TypeScript type definitions for the app.
-│       └── utils.ts          # Utility functions (CSV/JSON/DOCX export, etc.).
-│
-├── public/                 # Static assets (e.g., favicon).
-├── package.json            # Project dependencies and scripts.
-└── tailwind.config.ts      # Tailwind CSS configuration.
+│       ├── supabase-server.ts# Supabase client config.
+│       └── types.ts          # Type definitions.
+├── tests/                    # Playwright E2E tests.
+└── package.json
 ```
 
 ---
@@ -113,36 +109,25 @@ Here is a breakdown of the most important files and directories in the project.
 To run this application locally, you will need:
 
 *   Node.js (v18 or later)
-*   npm or another package manager
-*   A Google AI API Key (for Gemini models)
+*   A Google AI API Key (Gemini)
+*   A Supabase Project (Auth & Database)
 
 ### Setup Instructions
 
-1.  **Install Dependencies**:
-    Open a terminal in the project root and run:
-    ```bash
-    npm install
+1.  **Install Dependencies**: `npm install`
+2.  **Environment Variables**: Create a `.env.local` file:
     ```
-
-2.  **Configure Environment Variables**:
-    Create a `.env` file in the project root and add your Google AI API key:
+    GOOGLE_API_KEY=your_key
+    NEXT_PUBLIC_SUPABASE_URL=your_url
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
     ```
-    GEMINI_API_KEY=your_google_ai_api_key_here
-    ```
-
-3.  **Run the Development Server**:
-    Start the Next.js development server:
-    ```bash
-    npm run dev
-    ```
-    The application will be available at `http://localhost:9002`.
+3.  **Run Development**: `npm run dev` (Available at `http://localhost:9002`)
+4.  **Run Tests**: `npm run test:e2e`
 
 ---
 
 ## What the Application Does Not Do (Limitations & Future Scope)
 
-*   **No User Accounts or Persistent Storage**: The application state is ephemeral and exists only in the browser for the current session. There is no database to save analyses between sessions.
-*   **No True Background Processing**: The analysis is performed in the browser using server actions. If the user closes the browser tab, the analysis queue will stop. The browser notification feature helps mitigate this by allowing the user to switch tabs.
-*   **Limited Error Handling for AI**: While the app handles network and scraping errors, it has basic error handling for failures during the AI analysis itself. If a Genkit flow fails, it will be marked as an "Analysis Error".
-*   **No Dynamic `robots.txt` Parsing**: The tool impersonates Google Bot to bypass `robots.txt` but does not actually parse or respect its rules. This is a deliberate design choice to maximize content accessibility for analysis.
-*   **No Login/Authentication**: This is a public-facing tool with no concept of user accounts or private data.
+*   **AI Token Limits**: Very large sets of URLs might hit Google AI rate limits.
+*   **Local Email Confirmation**: In development, Supabase requires manual email confirmation unless configured otherwise.
+*   **Scraping Timeouts**: Some pages may block all crawlers, resulting in a timeout or failure (mitigated by fallback logic).

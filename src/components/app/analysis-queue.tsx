@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { CheckCircle2, AlertCircle, XCircle, Clock, Loader } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -27,30 +28,43 @@ const statusConfig: Record<
 
 const ScoreBadge = ({ score }: { score: number | undefined }) => {
   if (score === undefined) return <span className="text-muted-foreground">-</span>;
-  
+
   let colorClass = "bg-gray-400";
   if (score >= 4) colorClass = "bg-green-500";
   else if (score >= 2.5) colorClass = "bg-yellow-500";
   else if (score > 0) colorClass = "bg-red-500";
-  
+
   return <Badge className={cn("text-white", colorClass)}>{score.toFixed(1)}</Badge>;
 };
 
+interface AnalysisQueueProps {
+  items: AnalysisItem[];
+  activeItemId: string | null;
+  onRowClick: (id: string) => void;
+}
+
 export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueueProps) {
   const { t } = useI18n();
+  const activeRowRef = useRef<HTMLTableRowElement>(null);
+
+  useEffect(() => {
+    if (activeItemId && activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [activeItemId]);
 
   return (
     <Card className="h-full">
       <CardHeader>
         <CardTitle>{t('queue.title')}</CardTitle>
         <CardDescription>
-          {items.length > 0 ? t('queue.description.showing', {count: items.length}) : t('queue.description.empty')}
+          {items.length > 0 ? t('queue.description.showing', { count: items.length }) : t('queue.description.empty')}
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="max-h-[65vh]">
-          <Table>
-            <TableHeader className="sticky top-0 bg-background">
+        <ScrollArea className="h-[500px] border rounded-md p-2 bg-slate-50/30">
+          <Table data-testid="analysis-queue-table">
+            <TableHeader className="sticky top-0 bg-background z-20">
               <TableRow>
                 <TableHead className="w-[50px]">#</TableHead>
                 <TableHead>{t('queue.table.url')}</TableHead>
@@ -60,9 +74,10 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
             </TableHeader>
             <TableBody>
               {items.length > 0 ? (
-                items.map((item) => (
+                items.map((item: AnalysisItem) => (
                   <TableRow
                     key={item.id}
+                    ref={item.id === activeItemId ? activeRowRef : undefined}
                     onClick={() => onRowClick(item.id)}
                     className={cn("cursor-pointer", item.id === activeItemId && "bg-accent")}
                   >
@@ -75,7 +90,7 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                       <ScoreBadge score={item.discernResult?.domainAverages.score_geral} />
+                      <ScoreBadge score={item.discernResult?.domainAverages.score_geral} />
                     </TableCell>
                   </TableRow>
                 ))

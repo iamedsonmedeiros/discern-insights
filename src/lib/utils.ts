@@ -7,97 +7,154 @@ import { saveAs } from 'file-saver';
 
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
+    return twMerge(clsx(inputs))
 }
 
 export function extractUrlsFromString(content: string): string[] {
-  if (!content) {
-    return [];
-  }
+    if (!content) {
+        return [];
+    }
 
-  // This procedural approach is far more robust than a single complex regex.
-  // 1. Split the content by any whitespace (spaces, newlines, tabs) or commas.
-  // 2. Filter out any empty strings that result from the split.
-  const potentialUrls = content.split(/[\s,]+/).filter(Boolean);
+    // DEBUG: Log raw content info
+    const lines = content.split(/\n/);
+    console.log(`[extractUrls] Raw content length: ${content.length} chars, ${lines.length} lines`);
+    console.log(`[extractUrls] First 3 lines:`, lines.slice(0, 3));
+    console.log(`[extractUrls] Last 3 lines:`, lines.slice(-3));
 
-  // 3. For each potential URL, trim it and perform basic validation.
-  const cleanedUrls = potentialUrls.map(url => {
-      // Trim whitespace and remove surrounding quotes which are common in CSVs.
-      return url.trim().replace(/^"|"$/g, '');
-  }).filter(url => 
-      // It must start with http and have some characters after.
-      url.startsWith('http') && url.length > 8
-  );
+    // Use a regex to directly find all URLs (http/https) in the content
+    const httpMatches = content.match(/https?:\/\/[^\s,;|"'\t\n]+/g) || [];
+    console.log(`[extractUrls] Direct URL regex matches: ${httpMatches.length}`);
 
-  // 4. Return the list with duplicates removed.
-  return [...new Set(cleanedUrls)];
+    // Also find bare domain tokens (without http)
+    const tokens = content.split(/[\s,;|"\n\t]+/).filter(Boolean);
+    console.log(`[extractUrls] Total tokens after split: ${tokens.length}`);
+
+    const bareDomainUrls = tokens
+        .map(token => token.trim())
+        .filter(token => {
+            // Must not already start with http (those are captured above)
+            if (token.startsWith('http')) return false;
+            // Must look like a domain: has a dot, has letters, not just a number
+            return token.includes('.') && !token.startsWith('.') && !token.endsWith('.') && /[a-zA-Z]/.test(token) && token.length > 4;
+        })
+        .map(token => 'https://' + token);
+
+    console.log(`[extractUrls] Bare domain URLs found: ${bareDomainUrls.length}`);
+
+    // Combine both sets
+    const combined = [...httpMatches, ...bareDomainUrls];
+
+    // Clean up trailing punctuation
+    const finalizedUrls = combined.map(url => {
+        return url.replace(/[.,;:"']+$/, '');
+    }).filter(url => url.length > 8);
+
+    console.log(`[extractUrls] Final URLs: ${finalizedUrls.length}`);
+
+    return finalizedUrls;
 }
 
 
 export function exportJson(data: AnalysisItem[], filename: string) {
-  const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
-  const link = document.createElement('a');
-  link.href = jsonString;
-  link.download = `${filename}.json`;
-  link.click();
+    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
+    const link = document.createElement('a');
+    link.href = jsonString;
+    link.download = `${filename}.json`;
+    link.click();
 }
 
 function escapeCsvField(field: any): string {
-  if (field === null || field === undefined) {
-    return '';
-  }
-  const stringField = String(field);
-  if (stringField.includes(',') || stringField.includes('"') || stringField.includes('\n')) {
-    return `"${stringField.replace(/"/g, '""')}"`;
-  }
-  return stringField;
+    if (field === null || field === undefined) {
+        return '';
+    }
+    const stringField = String(field);
+    if (stringField.includes(',') || stringField.includes('"') || stringField.includes('\n')) {
+        return `"${stringField.replace(/"/g, '""')}"`;
+    }
+    return stringField;
 }
 
 export function exportCsv(data: AnalysisItem[], filename: string) {
-  if (data.length === 0) return;
+    if (data.length === 0) return;
 
-  const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `item${String(i + 1).padStart(2, '0')}_score`);
+    const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `item${String(i + 1).padStart(2, '0')}_score`);
 
-  const headers = [
-    'index', 'url', 'status', 'reason', 'title',
-    'score_geral', 'confiabilidade_avg', 'qualidade_tratamento_avg',
-    ...discernItemHeaders,
-    'resumo_executivo', 'observacoes', 'recomendacoes'
-  ];
-  
-  const rows = data.map(item => {
-    const discernScores = discernItemHeaders.map(header => {
-        const key = header.replace('_score', '') as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
-        return escapeCsvField(item.discernResult?.scores?.[key]);
+    const headers = [
+        'index', 'url', 'status', 'reason', 'title',
+        'score_geral', 'confiabilidade_avg', 'qualidade_tratamento_avg',
+        ...discernItemHeaders,
+        'resumo_executivo', 'observacoes', 'recomendacoes'
+    ];
+
+    const rows = data.map(item => {
+        const discernScores = discernItemHeaders.map(header => {
+            const key = header.replace('_score', '') as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
+            return escapeCsvField(item.discernResult?.scores?.[key]);
+        });
+
+        return [
+            escapeCsvField(item.index),
+            escapeCsvField(item.url),
+            escapeCsvField(item.status),
+            escapeCsvField(item.reason),
+            escapeCsvField(item.meta?.title),
+            escapeCsvField(item.discernResult?.domainAverages.score_geral),
+            escapeCsvField(item.discernResult?.domainAverages.confiabilidade),
+            escapeCsvField(item.discernResult?.domainAverages.qualidade_tratamento),
+            ...discernScores,
+            escapeCsvField(item.discernResult?.resumo),
+            escapeCsvField(item.discernResult?.observacoes),
+            escapeCsvField(item.discernResult?.recommmendacoes),
+        ].join(',');
     });
 
-    return [
-      escapeCsvField(item.index),
-      escapeCsvField(item.url),
-      escapeCsvField(item.status),
-      escapeCsvField(item.reason),
-      escapeCsvField(item.meta?.title),
-      escapeCsvField(item.discernResult?.domainAverages.score_geral),
-      escapeCsvField(item.discernResult?.domainAverages.confiabilidade),
-      escapeCsvField(item.discernResult?.domainAverages.qualidade_tratamento),
-      ...discernScores,
-      escapeCsvField(item.discernResult?.resumo),
-      escapeCsvField(item.discernResult?.observacoes),
-      escapeCsvField(item.discernResult?.recommmendacoes),
-    ].join(',');
-  });
 
+    const csvString = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 
-  const csvString = [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-  link.setAttribute('href', url);
-  link.setAttribute('download', `${filename}.csv`);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+export function exportScoreSheetCsv(data: AnalysisItem[], filename: string) {
+    if (data.length === 0) return;
+
+    const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `Item ${i + 1}`);
+
+    const headers = [
+        'URL',
+        ...discernItemHeaders,
+        'Média Geral'
+    ];
+
+    const rows = data.map(item => {
+        const scores = Array.from({ length: 16 }, (_, i) => {
+            const key = `item${String(i + 1).padStart(2, '0')}` as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
+            return item.discernResult?.scores?.[key] || '';
+        });
+
+        return [
+            escapeCsvField(item.url),
+            ...scores,
+            escapeCsvField(item.discernResult?.domainAverages.score_geral),
+        ].join(',');
+    });
+
+    const csvString = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 const discernQuestions: Record<string, string> = {
@@ -121,14 +178,14 @@ const discernQuestions: Record<string, string> = {
 
 
 const statusTranslations: Record<AnalysisStatus, string> = {
-  pending: 'Pendente',
-  processing: 'Processando',
-  completed: 'Concluído',
-  not_eligible_pdf: 'Não Elegível (PDF)',
-  not_eligible_video: 'Não Elegível (Vídeo)',
-  unavailable_offline: 'Offline / Indisponível',
-  scraping_error: 'Erro de Extração',
-  analysis_error: 'Erro de Análise',
+    pending: 'Pendente',
+    processing: 'Processando',
+    completed: 'Concluído',
+    not_eligible_pdf: 'Não Elegível (PDF)',
+    not_eligible_video: 'Não Elegível (Vídeo)',
+    unavailable_offline: 'Offline / Indisponível',
+    scraping_error: 'Erro de Extração',
+    analysis_error: 'Erro de Análise',
 };
 
 
@@ -140,7 +197,7 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
             properties: {},
             children: data.flatMap((item, index) => {
                 const children: Paragraph[] = [
-                     new Paragraph({
+                    new Paragraph({
                         text: `${index + 1}. ${item.meta?.title || item.url}`,
                         heading: HeadingLevel.HEADING_1,
                     }),
@@ -178,7 +235,7 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                         new Paragraph({ text: "Resumo Executivo", heading: HeadingLevel.HEADING_2 }),
                         new Paragraph(item.discernResult.resumo),
                         new Paragraph({ text: " " }),
-                        
+
                         new Paragraph({ text: "Observações", heading: HeadingLevel.HEADING_2 }),
                         new Paragraph(item.discernResult.observacoes),
                         new Paragraph({ text: " " }),
@@ -189,13 +246,14 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
 
                         new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
                     );
-                    
+
                     Object.entries(item.discernResult.scores).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, score]) => {
+                        const question = discernQuestions[key as keyof typeof discernQuestions] || key;
                         children.push(new Paragraph({
-                            children: [ new TextRun({ text: discernQuestions[key] || key, bold: true }) ]
+                            children: [new TextRun({ text: question, bold: true })]
                         }));
                         children.push(new Paragraph({
-                            children: [ new TextRun({ text: `Score: ${score}/5` }) ]
+                            children: [new TextRun({ text: `Score: ${score}/5` })]
                         }));
                         children.push(new Paragraph({
                             children: [
@@ -206,7 +264,7 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                         children.push(new Paragraph({ text: " " }));
                     });
                 } else {
-                     children.push(
+                    children.push(
                         new Paragraph({ text: " " }),
                         new Paragraph({
                             children: [
@@ -220,12 +278,12 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                                 new TextRun(item.reason || "Nenhum motivo especificado."),
                             ],
                         }),
-                         new Paragraph({ text: " " }),
-                         new Paragraph({
+                        new Paragraph({ text: " " }),
+                        new Paragraph({
                             children: [
                                 new TextRun({ text: "A análise automatizada não pôde ser concluída. Recomenda-se uma verificação e análise manual deste item.", bold: true, italics: true }),
                             ]
-                         })
+                        })
                     );
                 }
 
@@ -244,29 +302,29 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
 
 
 function createSection(text: string): Paragraph[] {
-  const paragraphs: Paragraph[] = [];
-  const lines = text.split('\n');
+    const paragraphs: Paragraph[] = [];
+    const lines = text.split('\n');
 
-  for (const line of lines) {
-    if (line.startsWith('### ')) {
-      paragraphs.push(new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
-    } else if (line.startsWith('## ')) {
-      paragraphs.push(new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
-    } else if (line.startsWith('# ')) {
-      paragraphs.push(new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
-    } else if (line.trim() === '') {
-      paragraphs.push(new Paragraph({ text: '' }));
-    } else {
-        const isBold = line.startsWith('**') && line.endsWith('**');
-        const cleanLine = line.replace(/\*\*/g, '');
-        paragraphs.push(new Paragraph({ 
-            children: [new TextRun({ text: cleanLine, bold: isBold })],
-            spacing: { after: 100 }, 
-            alignment: AlignmentType.JUSTIFIED 
-        }));
+    for (const line of lines) {
+        if (line.startsWith('### ')) {
+            paragraphs.push(new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
+        } else if (line.startsWith('## ')) {
+            paragraphs.push(new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
+        } else if (line.startsWith('# ')) {
+            paragraphs.push(new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
+        } else if (line.trim() === '') {
+            paragraphs.push(new Paragraph({ text: '' }));
+        } else {
+            const isBold = line.startsWith('**') && line.endsWith('**');
+            const cleanLine = line.replace(/\*\*/g, '');
+            paragraphs.push(new Paragraph({
+                children: [new TextRun({ text: cleanLine, bold: isBold })],
+                spacing: { after: 100 },
+                alignment: AlignmentType.JUSTIFIED
+            }));
+        }
     }
-  }
-  return paragraphs;
+    return paragraphs;
 }
 
 
@@ -276,15 +334,17 @@ export async function saveDocxFromContent(content: string, filename: string) {
 
     const doc = new Document({
         styles: {
-            paragraph: {
-                run: {
-                    font: "Arial",
-                    size: 24, // 12pt
+            default: {
+                paragraph: {
+                    run: {
+                        font: "Arial",
+                        size: 24, // 12pt
+                    },
                 },
             },
         },
         sections: [{
-             properties: {
+            properties: {
                 page: {
                     margin: {
                         top: 1134, // ~2cm
@@ -295,7 +355,9 @@ export async function saveDocxFromContent(content: string, filename: string) {
                 },
             },
             children: docChildren.map(p => {
-                p.properties.spacing = { line: 360, before: 0, after: 0 }; // Double spacing
+                // Use the setSpacing method if properties is private
+                // Or cast to any if necessary for this specific library version
+                (p as any).spacing = { line: 360, before: 0, after: 0 }; 
                 return p;
             }),
         }],

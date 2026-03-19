@@ -73,6 +73,10 @@ const PerformDiscernAnalysisOutputSchema = z.object({
   observacoes: z.string().describe('Observations regarding authorship, sources, and conflicts.'),
   recommmendacoes: z.string().describe('Recommendations for improving the information.'),
   fonte: z.string().describe('Source of the DISCERN analysis.'),
+  usage: z.object({
+    inputTokens: z.number().describe('Number of input tokens used.'),
+    outputTokens: z.number().describe('Number of output tokens used.'),
+  }).describe('Token usage for this analysis.'),
   rawReportMarkdown: z.string().describe('Complete DISCERN report in Markdown format.'),
 });
 export type PerformDiscernAnalysisOutput = z.infer<typeof PerformDiscernAnalysisOutputSchema>;
@@ -128,7 +132,14 @@ const performDiscernAnalysisFlow = ai.defineFlow(
     outputSchema: PerformDiscernAnalysisOutputSchema,
   },
   async input => {
-    const {output} = await discernAnalystPrompt(input);
-    return output!;
+    const {output, usage} = await discernAnalystPrompt(input);
+    
+    return {
+      ...output!,
+      usage: {
+        inputTokens: usage?.inputTokens || 0,
+        outputTokens: usage?.outputTokens || 0,
+      }
+    };
   }
 );
