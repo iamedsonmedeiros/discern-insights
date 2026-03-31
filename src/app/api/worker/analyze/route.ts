@@ -8,9 +8,9 @@ import { processUrl } from "@/app/actions";
 // Vercel Hobby: max 60 seconds per serverless function
 export const maxDuration = 60;
 
-// Process 4 URLs in parallel per invocation — safe within 60s budget
+// Process 1 URL at a time per invocation — safer for Vercel timeouts (10s)
 // QStash will re-invoke this worker for each subsequent batch
-const BATCH_SIZE = 4;
+const BATCH_SIZE = 1;
 
 async function handler(request: NextRequest) {
   let jobId: string | undefined;
@@ -71,44 +71,47 @@ async function handler(request: NextRequest) {
         .update({ status: "processing", updated_at: new Date().toISOString() })
         .in("id", items.map((i: { id: string }) => i.id));
 
-      const results = await Promise.allSettled(
-        items.map(async (item: { id: string; url: string; index: number }) => {
-          const result = await processUrl(item.url, job.language || "pt-BR", true);
+      // Process items in this batch
+      for (const item of items) {
+        const result = await processUrl(item.url, job.language || "pt-BR", true);
 
-          await supabase
-            .from("analysis_items")
-            .update({
-              status: result.status,
-              reason: result.reason ?? null,
-              meta: result.meta ?? null,
-              discern_result: result.discernResult ?? null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", item.id);
+        await supabase
+          .from("analysis_items")
+          .update({
+            status: result.status,
+            reason: result.reason ?? null,
+            meta: result.meta ?? null,
+            discern_result: result.discernResult ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", item.id);
 
-          return result;
-        })
-      );
+        // Update cumulative progress on the job IMMEDIATELY after each URL
+        const isCompleted = result.status === "completed";
+        const isFailed = !isCompleted;
 
-      for (const result of results) {
-        if (result.status === "fulfilled" && result.value.status === "completed") {
-          completedInBatch++;
-        } else {
-          failedInBatch++;
-        }
+        const { data: latestJob } = await supabase
+          .from("analysis_jobs")
+          .select("completed_urls, failed_urls")
+          .eq("id", jobId)
+          .single();
+
+        await supabase
+          .from("analysis_jobs")
+          .update({
+            completed_urls: (latestJob?.completed_urls || 0) + (isCompleted ? 1 : 0),
+            failed_urls: (latestJob?.failed_urls || 0) + (isFailed ? 1 : 0),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", jobId);
       }
     }
 
-    // 4. Update cumulative progress on the job
+    // 4. Reload job for accurate progress reporting in response
     const { data: updatedJob } = await supabase
       .from("analysis_jobs")
-      .update({
-        completed_urls: (job.completed_urls || 0) + completedInBatch,
-        failed_urls: (job.failed_urls || 0) + failedInBatch,
-        updated_at: new Date().toISOString(),
-      })
+      .select("*")
       .eq("id", jobId)
-      .select()
       .single();
 
     const currentCompleted = (updatedJob?.completed_urls ?? 0);

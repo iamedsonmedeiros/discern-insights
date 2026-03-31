@@ -60,11 +60,26 @@ export function DiscernAnalyzerPage() {
     if ("Notification" in window) {
       setNotificationPermission(Notification.permission);
     }
-    // Load initial data from Supabase
+    // Load initial data from Supabase and check for active background jobs
     const loadData = async () => {
-      const savedItems = await fetchAnalysisItems();
+      const [savedItems, { data: activeJobs }] = await Promise.all([
+        fetchAnalysisItems(),
+        supabase.from("analysis_jobs").select("*").eq("status", "processing").order("created_at", { ascending: false }).limit(1)
+      ]);
+
       if (savedItems.length > 0) {
         setItems(savedItems);
+      }
+
+      if (activeJobs && activeJobs.length > 0) {
+        const job = activeJobs[0];
+        setBackgroundJobId(job.id);
+        setBackgroundJobStatus(job.status);
+        setBackgroundProgress({
+          completed: job.completed_urls,
+          failed: job.failed_urls,
+          total: job.total_urls,
+        });
       }
     };
     loadData();
@@ -75,7 +90,7 @@ export function DiscernAnalyzerPage() {
     if (!backgroundJobId) return;
 
     const supabaseClient = supabase;
-    const channel = supabaseClient
+    const jobChannel = supabaseClient
       .channel(`job-${backgroundJobId}`)
       .on(
         "postgres_changes",
@@ -85,8 +100,8 @@ export function DiscernAnalyzerPage() {
           table: "analysis_jobs",
           filter: `id=eq.${backgroundJobId}`,
         },
-        (payload: { new: Record<string, unknown> }) => {
-          const job = payload.new as any;
+        (payload: { new: any }) => {
+          const job = payload.new;
           setBackgroundJobStatus(job.status);
           setBackgroundProgress({
             completed: job.completed_urls,
@@ -94,7 +109,7 @@ export function DiscernAnalyzerPage() {
             total: job.total_urls,
           });
           if (job.status === "done" || job.status === "failed") {
-            // Reload items to show updated results
+            // Reload items to show full updated results upon completion
             fetchAnalysisItems().then((updated) => {
               if (updated.length > 0) setItems(updated);
             });
@@ -106,8 +121,40 @@ export function DiscernAnalyzerPage() {
       )
       .subscribe();
 
+    // Also subscribe to item changes to show real-time progress in the list
+    const itemsChannel = supabaseClient
+      .channel(`items-${backgroundJobId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "analysis_items",
+          filter: `job_id=eq.${backgroundJobId}`,
+        },
+        (payload: { new: any }) => {
+          const updatedItem = payload.new;
+          setItems((prev) =>
+            prev.map((item) =>
+              item.id === updatedItem.id
+                ? {
+                    ...item,
+                    status: updatedItem.status,
+                    reason: updatedItem.reason,
+                    meta: updatedItem.meta,
+                    discernResult: updatedItem.discern_result,
+                    updatedAt: updatedItem.updated_at,
+                  }
+                : item
+            )
+          );
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabaseClient.removeChannel(channel);
+      supabaseClient.removeChannel(jobChannel);
+      supabaseClient.removeChannel(itemsChannel);
     };
   }, [backgroundJobId, toast]);
 
