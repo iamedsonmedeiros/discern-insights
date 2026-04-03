@@ -143,7 +143,8 @@ export async function clearAnalysisQueue() {
   const { error } = await supabase
     .from('analysis_items')
     .delete()
-    .eq('user_id', user.id); // Only delete items belonging to this user
+    .eq('user_id', user.id)
+    .is('job_id', null); // SOMENTE itens que não pertencem a um job (histórico)
 
   if (error) {
     console.error('Error clearing queue in Supabase:', error);

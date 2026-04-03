@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     if (!pendingItems || pendingItems.length === 0) {
       return NextResponse.json(
-        { error: "No pending items to process" },
+        { error: `No pending items found in database for user ${user.id.substring(0, 8)}... Please ensure items are imported and not already processing.` },
         { status: 400 }
       );
     }
