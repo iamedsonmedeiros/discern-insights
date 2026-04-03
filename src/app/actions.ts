@@ -3,7 +3,7 @@
 import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
 import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
-import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput } from "@/lib/types";
+import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
 import { redis, normalizeUrlForCache, isRedisConfigured } from "@/lib/redis";
 // Reverted pdf-parse
@@ -23,15 +23,23 @@ async function getAuthenticatedUser() {
 
 // --- Database Operations ---
 
-export async function fetchAnalysisItems(): Promise<AnalysisItem[]> {
+export async function fetchAnalysisItems(options?: { jobId?: string, onlyUnassigned?: boolean }): Promise<AnalysisItem[]> {
   try {
     const { supabase, user } = await getAuthenticatedUser();
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('analysis_items')
       .select('*')
       .eq('user_id', user.id)
       .order('index', { ascending: true });
+
+    if (options?.jobId) {
+      query = query.eq('job_id', options.jobId);
+    } else if (options?.onlyUnassigned) {
+      query = query.is('job_id', null);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error fetching items from Supabase:', error);
@@ -46,11 +54,53 @@ export async function fetchAnalysisItems(): Promise<AnalysisItem[]> {
       reason: item.reason,
       meta: item.meta,
       discernResult: item.discern_result,
-      updatedAt: item.updated_at
+      updatedAt: item.updated_at,
+      jobId: item.job_id
     }));
   } catch (e) {
     console.error("fetchAnalysisItems failed:", e);
     return [];
+  }
+}
+
+export async function fetchAnalysisJobs(): Promise<AnalysisJob[]> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+
+    const { data, error } = await supabase
+      .from('analysis_jobs')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching jobs:', error);
+      return [];
+    }
+
+    return data as AnalysisJob[];
+  } catch (e) {
+    console.error("fetchAnalysisJobs failed:", e);
+    return [];
+  }
+}
+
+export async function deleteAnalysisJob(jobId: string) {
+  const { supabase, user } = await getAuthenticatedUser();
+  
+  // Items with job_id cascade or need deleting? The items will still exist.
+  // We can just delete the items first or let it cascade. 
+  await supabase.from('analysis_items').delete().eq('job_id', jobId).eq('user_id', user.id);
+  
+  const { error } = await supabase
+    .from('analysis_jobs')
+    .delete()
+    .eq('id', jobId)
+    .eq('user_id', user.id);
+
+  if (error) {
+    console.error('Error deleting job:', error);
+    throw error;
   }
 }
 

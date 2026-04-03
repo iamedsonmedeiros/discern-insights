@@ -25,7 +25,12 @@ import { useI18n } from "@/components/i18n/use-i18n";
 
 const CONCURRENCY_LIMIT = 10;
 
-export function DiscernAnalyzerPage() {
+interface DiscernAnalyzerPageProps {
+  initialJobId?: string;
+  onClearJobId?: () => void;
+}
+
+export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnalyzerPageProps = {}) {
   const { t, setLocale, locale } = useI18n();
   const [items, setItems] = useState<AnalysisItem[]>([]);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
@@ -40,6 +45,7 @@ export function DiscernAnalyzerPage() {
   const itemsRef = useRef<AnalysisItem[]>([]);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const [pasteContent, setPasteContent] = useState("");
+  const [keyword, setKeyword] = useState("");
   const { toast } = useToast();
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
@@ -62,17 +68,25 @@ export function DiscernAnalyzerPage() {
     }
     // Load initial data from Supabase and check for active background jobs
     const loadData = async () => {
-      const [savedItems, { data: activeJobs }] = await Promise.all([
-        fetchAnalysisItems(),
-        supabase.from("analysis_jobs").select("*").eq("status", "processing").order("created_at", { ascending: false }).limit(1)
-      ]);
+      const fetchParams = initialJobId ? { jobId: initialJobId } : { onlyUnassigned: true };
+      let activeJobsMatch: any = [];
+      let activeJobError = null;
 
-      if (savedItems.length > 0) {
+      // Only query active general jobs if NOT viewing a specific history job
+      if (!initialJobId) {
+        const { data, error } = await supabase.from("analysis_jobs").select("*").eq("status", "processing").order("created_at", { ascending: false }).limit(1);
+        activeJobsMatch = data;
+        activeJobError = error;
+      }
+
+      const savedItems = await fetchAnalysisItems(fetchParams);
+
+      if (savedItems.length >= 0) {
         setItems(savedItems);
       }
 
-      if (activeJobs && activeJobs.length > 0) {
-        const job = activeJobs[0];
+      if (activeJobsMatch && activeJobsMatch.length > 0) {
+        const job = activeJobsMatch[0];
         setBackgroundJobId(job.id);
         setBackgroundJobStatus(job.status);
         setBackgroundProgress({
@@ -80,10 +94,14 @@ export function DiscernAnalyzerPage() {
           failed: job.failed_urls,
           total: job.total_urls,
         });
+      } else if (initialJobId) {
+         // If viewing a history component, we should load job info just manually as read-only.
+         // Realtime logic exists below for updates if it gets updated.
+         setBackgroundJobId(initialJobId);
       }
     };
     loadData();
-  }, [t]);
+  }, [t, initialJobId]);
 
   // Supabase Realtime: subscribe to background job progress
   useEffect(() => {
@@ -400,7 +418,7 @@ export function DiscernAnalyzerPage() {
       const res = await fetch('/api/jobs/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: locale }),
+        body: JSON.stringify({ language: locale, keyword }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
@@ -546,6 +564,18 @@ export function DiscernAnalyzerPage() {
                 <CardDescription>{t('controls.description')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
+                {initialJobId && (
+                  <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg border border-blue-100 mb-4">
+                    <div className="text-sm text-blue-800">
+                      Visualizando sessão do histórico.
+                    </div>
+                    {onClearJobId && (
+                      <Button variant="ghost" size="sm" onClick={onClearJobId} className="h-6 x-2 text-xs">
+                        Voltar à Fila Atual
+                      </Button>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <Label htmlFor="auto-mode" className="flex flex-col space-y-1">
                     <span>{t('controls.autoMode')}</span>
@@ -573,12 +603,19 @@ export function DiscernAnalyzerPage() {
                   </div>
                 </div>
 
-                {/* Background processing section */}
                 <div className="border-t pt-4 space-y-3">
                   <div className="space-y-1">
                     <p className="text-sm font-medium">Processar em segundo plano</p>
                     <p className="text-xs text-muted-foreground">Envie para o servidor e feche o navegador. Você receberá um email ao terminar.</p>
                   </div>
+                  {!initialJobId && (
+                    <Input
+                      placeholder="Nome da Sessão (Ex: Câncer 2024)"
+                      value={keyword}
+                      onChange={(e) => setKeyword(e.target.value)}
+                      className="text-sm border-slate-200"
+                    />
+                  )}
                   <Button
                     variant="outline"
                     className="w-full"

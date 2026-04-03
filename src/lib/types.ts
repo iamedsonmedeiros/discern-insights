@@ -30,4 +30,19 @@ export type AnalysisItem = {
   outputTokens?: number;
   totalCost?: number;
   discernResult?: PerformDiscernAnalysisOutput;
+  jobId?: string;
+};
+
+export type AnalysisJob = {
+  id: string;
+  user_id: string;
+  user_email: string;
+  total_urls: number;
+  completed_urls: number;
+  failed_urls: number;
+  status: "pending" | "processing" | "done" | "failed";
+  language: string;
+  keyword?: string;
+  created_at: string;
+  updated_at: string;
 };

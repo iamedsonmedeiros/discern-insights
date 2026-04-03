@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { language = "pt-BR" } = await request.json().catch(() => ({}));
+    const { language = "pt-BR", keyword = "" } = await request.json().catch(() => ({}));
 
     // 1. Fetch all pending items for this user
     const { data: pendingItems, error: fetchError } = await supabase
@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
         failed_urls: 0,
         status: "pending",
         language,
+        keyword,
       })
       .select()
       .single();
