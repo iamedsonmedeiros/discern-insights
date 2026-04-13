@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { Client } from "@upstash/qstash";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { sendCompletionEmail } from "@/lib/email";
 import { processUrl } from "@/app/actions";
@@ -8,20 +7,17 @@ import { processUrl } from "@/app/actions";
 // Vercel Hobby: max 60 seconds per serverless function
 export const maxDuration = 60;
 
-// Process 1 URL at a time per invocation — safer for Vercel timeouts (10s)
-// QStash will re-invoke this worker for each subsequent batch
-const BATCH_SIZE = 1;
-
 async function handler(request: NextRequest) {
   let jobId: string | undefined;
+  let itemId: string | undefined;
 
   try {
     const body = await request.json();
     jobId = body.jobId;
-    const startIndex: number = body.startIndex ?? 0;
+    itemId = body.itemId;
 
-    if (!jobId) {
-      return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
+    if (!jobId || !itemId) {
+      return NextResponse.json({ error: "Missing jobId or itemId" }, { status: 400 });
     }
 
     const supabase = createAdminClient();
@@ -38,140 +34,64 @@ async function handler(request: NextRequest) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
-    // If this is the first batch, mark job as processing
-    if (startIndex === 0) {
-      await supabase
-        .from("analysis_jobs")
-        .update({ status: "processing", updated_at: new Date().toISOString() })
-        .eq("id", jobId);
-    }
-
-    // 2. Fetch the next batch of pending items for this job
-    const { data: items, error: itemsError } = await supabase
+    // 2. Idempotency guard: claim item only if still pending (compare-and-swap)
+    const { data: item } = await supabase
       .from("analysis_items")
-      .select("id, url, index")
-      .eq("job_id", jobId)
+      .update({ status: "processing", updated_at: new Date().toISOString() })
+      .eq("id", itemId)
       .eq("status", "pending")
-      .order("index", { ascending: true })
-      .limit(BATCH_SIZE);
-
-    if (itemsError) {
-      console.error("Error fetching items:", jobId, itemsError);
-      return NextResponse.json({ error: "Failed to fetch items" }, { status: 500 });
-    }
-
-    // 3. Process this batch in parallel
-    let completedInBatch = 0;
-    let failedInBatch = 0;
-
-    if (items && items.length > 0) {
-      // Mark all items in this batch as processing
-      await supabase
-        .from("analysis_items")
-        .update({ status: "processing", updated_at: new Date().toISOString() })
-        .in("id", items.map((i: { id: string }) => i.id));
-
-      // Process items in this batch
-      for (const item of items) {
-        const result = await processUrl(item.url, job.language || "pt-BR", true);
-
-        await supabase
-          .from("analysis_items")
-          .update({
-            status: result.status,
-            reason: result.reason ?? null,
-            meta: result.meta ?? null,
-            discern_result: result.discernResult ?? null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", item.id);
-
-        // Update cumulative progress on the job IMMEDIATELY after each URL
-        const isCompleted = result.status === "completed";
-        const isFailed = !isCompleted;
-
-        const { data: latestJob } = await supabase
-          .from("analysis_jobs")
-          .select("completed_urls, failed_urls")
-          .eq("id", jobId)
-          .single();
-
-        await supabase
-          .from("analysis_jobs")
-          .update({
-            completed_urls: (latestJob?.completed_urls || 0) + (isCompleted ? 1 : 0),
-            failed_urls: (latestJob?.failed_urls || 0) + (isFailed ? 1 : 0),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", jobId);
-      }
-    }
-
-    // 4. Reload job for accurate progress reporting in response
-    const { data: updatedJob } = await supabase
-      .from("analysis_jobs")
-      .select("*")
-      .eq("id", jobId)
+      .select("id, url, index")
       .single();
 
-    const currentCompleted = (updatedJob?.completed_urls ?? 0);
-    const currentFailed = (updatedJob?.failed_urls ?? 0);
-    const processedSoFar = currentCompleted + currentFailed;
+    if (!item) {
+      // Already claimed or processed — safe to skip (QStash retry or duplicate)
+      return NextResponse.json({ status: "skipped", reason: "already_claimed" });
+    }
 
-    // 5. Check if there are more pending items for this job
-    const { count: pendingCount } = await supabase
+    // 3. Process the URL
+    const result = await processUrl(item.url, job.language || "pt-BR", true);
+
+    // 4. Update item with result
+    await supabase
       .from("analysis_items")
-      .select("id", { count: "exact", head: true })
-      .eq("job_id", jobId)
-      .eq("status", "pending");
+      .update({
+        status: result.status,
+        reason: result.reason ?? null,
+        meta: result.meta ?? null,
+        discern_result: result.discernResult ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", item.id);
 
-    const hasMore = (pendingCount ?? 0) > 0;
+    // 5. Atomic counter increment via RPC
+    const isCompleted = result.status === "completed";
+    const rpcName = isCompleted ? "increment_completed" : "increment_failed";
+    const { data: counters, error: rpcError } = await supabase.rpc(rpcName, { p_job_id: jobId });
 
-    if (hasMore) {
-      // 6a. Chain to the next batch via QStash
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
-      const workerUrl = `${appUrl}/api/worker/analyze`;
+    if (rpcError) {
+      console.error("RPC counter error:", rpcError);
+      return NextResponse.json({ error: "Counter update failed" }, { status: 500 });
+    }
 
-      if (process.env.QSTASH_TOKEN) {
-        const qstash = new Client({ token: process.env.QSTASH_TOKEN });
-        await qstash.publishJSON({
-          url: workerUrl,
-          body: { jobId, startIndex: startIndex + BATCH_SIZE },
-          timeout: 60,
-        });
-      } else {
-        // Dev fallback: call next batch directly (fire and forget)
-        fetch(workerUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-dev-bypass": "1" },
-          body: JSON.stringify({ jobId, startIndex: startIndex + BATCH_SIZE }),
-        }).catch((e) => console.error("Chained worker call failed:", e));
-      }
+    // 6. Check if this worker is the last one (job completion detection)
+    const { completed_urls, failed_urls, total_urls } = counters[0];
+    const processedSoFar = completed_urls + failed_urls;
 
-      return NextResponse.json({
-        jobId,
-        batchProcessed: items?.length ?? 0,
-        processedSoFar,
-        totalUrls: job.total_urls,
-        status: "chaining_next_batch",
-      });
-    } else {
-      // 6b. All items processed — mark job as done
+    if (processedSoFar >= total_urls) {
+      // This is the last worker — finalize job
       await supabase
         .from("analysis_jobs")
-        .update({
-          status: "done",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", jobId);
+        .update({ status: "done", updated_at: new Date().toISOString() })
+        .eq("id", jobId)
+        .eq("status", "processing"); // guard: only if still processing
 
       // Send completion email (non-fatal)
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
       try {
         await sendCompletionEmail(job.user_email, {
-          totalUrls: job.total_urls,
-          completedUrls: currentCompleted,
-          failedUrls: currentFailed,
+          totalUrls: total_urls,
+          completedUrls: completed_urls,
+          failedUrls: failed_urls,
           appUrl,
         });
       } catch (emailError) {
@@ -180,24 +100,69 @@ async function handler(request: NextRequest) {
 
       return NextResponse.json({
         jobId,
-        totalUrls: job.total_urls,
-        completedUrls: currentCompleted,
-        failedUrls: currentFailed,
+        itemId: item.id,
         status: "done",
+        totalUrls: total_urls,
+        completedUrls: completed_urls,
+        failedUrls: failed_urls,
       });
     }
-  } catch (error) {
-    console.error("Worker error for job:", jobId, error);
 
-    if (jobId) {
+    return NextResponse.json({
+      jobId,
+      itemId: item.id,
+      status: "processed",
+      processedSoFar,
+      totalUrls: total_urls,
+    });
+  } catch (error) {
+    console.error("Worker error for job:", jobId, "item:", itemId, error);
+
+    if (jobId && itemId) {
       try {
         const supabase = createAdminClient();
+
+        // Mark only this item as failed
         await supabase
-          .from("analysis_jobs")
-          .update({ status: "failed", updated_at: new Date().toISOString() })
-          .eq("id", jobId);
+          .from("analysis_items")
+          .update({
+            status: "analysis_error",
+            reason: error instanceof Error ? error.message : String(error),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", itemId);
+
+        // Atomic increment of failed counter + check completion
+        const { data: counters } = await supabase.rpc("increment_failed", { p_job_id: jobId });
+
+        if (counters && counters[0]) {
+          const { completed_urls, failed_urls, total_urls } = counters[0];
+          if (completed_urls + failed_urls >= total_urls) {
+            const { data: job } = await supabase
+              .from("analysis_jobs")
+              .select("user_email")
+              .eq("id", jobId)
+              .single();
+
+            await supabase
+              .from("analysis_jobs")
+              .update({ status: "done", updated_at: new Date().toISOString() })
+              .eq("id", jobId)
+              .eq("status", "processing");
+
+            if (job?.user_email) {
+              const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
+              await sendCompletionEmail(job.user_email, {
+                totalUrls: total_urls,
+                completedUrls: completed_urls,
+                failedUrls: failed_urls,
+                appUrl,
+              }).catch((e) => console.error("Failed to send completion email:", e));
+            }
+          }
+        }
       } catch (e) {
-        console.error("Failed to mark job as failed:", e);
+        console.error("Failed to handle worker error gracefully:", e);
       }
     }
 

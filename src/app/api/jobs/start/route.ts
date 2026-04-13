@@ -5,6 +5,11 @@ import { createClient } from "@/lib/supabase-server";
 // Vercel Hobby: max 30 seconds should be plenty for job creation
 export const maxDuration = 30;
 
+// How many workers run in parallel at any given time
+const PARALLEL_LIMIT = 5;
+// Seconds between each group of parallel workers
+const STAGGER_DELAY_SECONDS = 3;
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient();
@@ -24,7 +29,8 @@ export async function POST(request: NextRequest) {
       .from("analysis_items")
       .select("id, url, index")
       .eq("user_id", user.id)
-      .eq("status", "pending");
+      .eq("status", "pending")
+      .order("index", { ascending: true });
 
     if (fetchError) {
       console.error("Error fetching pending items:", fetchError);
@@ -41,7 +47,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Create a new analysis job record
+    // 2. Create a new analysis job record (status = processing immediately)
     const { data: job, error: jobError } = await supabase
       .from("analysis_jobs")
       .insert({
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest) {
         total_urls: pendingItems.length,
         completed_urls: 0,
         failed_urls: 0,
-        status: "pending",
+        status: "processing",
         language,
         keyword,
       })
@@ -81,22 +87,27 @@ export async function POST(request: NextRequest) {
       process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
     const workerUrl = `${appUrl}/api/worker/analyze`;
 
-    // 4. Publish to QStash (if token is configured), otherwise call worker directly
+    // 4. Fan-out: publish one QStash message per item with staggered delays
     if (process.env.QSTASH_TOKEN) {
       const qstash = new Client({ token: process.env.QSTASH_TOKEN });
-      await qstash.publishJSON({
+
+      const messages = pendingItems.map((item, i) => ({
         url: workerUrl,
-        body: { jobId: job.id },
-        // Give the worker 5 minutes to complete
-        timeout: 300,
-      });
+        body: { jobId: job.id, itemId: item.id },
+        delay: Math.floor(i / PARALLEL_LIMIT) * STAGGER_DELAY_SECONDS,
+        retries: 2,
+      }));
+
+      await qstash.batchJSON(messages);
     } else {
-      // Development fallback: call worker directly (fire and forget)
-      fetch(workerUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-dev-bypass": "1" },
-        body: JSON.stringify({ jobId: job.id }),
-      }).catch((e) => console.error("Direct worker call failed:", e));
+      // Development fallback: call worker directly for each item (fire and forget)
+      for (const item of pendingItems) {
+        fetch(workerUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-dev-bypass": "1" },
+          body: JSON.stringify({ jobId: job.id, itemId: item.id }),
+        }).catch((e) => console.error("Direct worker call failed:", e));
+      }
     }
 
     return NextResponse.json({ jobId: job.id, totalUrls: pendingItems.length });
