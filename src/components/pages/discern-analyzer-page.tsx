@@ -176,6 +176,41 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     };
   }, [backgroundJobId, toast]);
 
+  // Polling fallback: fetch job progress every 3s when a background job is active
+  useEffect(() => {
+    if (!backgroundJobId || backgroundJobStatus !== 'processing') return;
+
+    const poll = async () => {
+      const { data } = await supabase
+        .from('analysis_jobs')
+        .select('status, completed_urls, failed_urls, total_urls')
+        .eq('id', backgroundJobId)
+        .single();
+
+      if (!data) return;
+
+      setBackgroundJobStatus(data.status);
+      setBackgroundProgress({
+        completed: data.completed_urls,
+        failed: data.failed_urls,
+        total: data.total_urls,
+      });
+
+      if (data.status === 'done' || data.status === 'failed') {
+        fetchAnalysisItems().then((updated) => {
+          if (updated.length > 0) setItems(updated);
+        });
+        if (data.status === 'done') {
+          toast({ title: '✅ Análise concluída!', description: 'Verifique seu email para o resumo.' });
+        }
+      }
+    };
+
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [backgroundJobId, backgroundJobStatus, toast]);
+
+
   const activeItem = useMemo(
     () => items.find((item) => item.id === activeItemId) || null,
     [items, activeItemId]
