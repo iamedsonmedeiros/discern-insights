@@ -1,176 +1,207 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { createAdminClient } from "@/lib/supabase-admin";
-import { sendCompletionEmail } from "@/lib/email";
-import { processUrl } from "@/app/actions";
 
-// Vercel Hobby: max 60 seconds per serverless function
+import { createAdminClient } from "@/lib/supabase-admin";
+import { analyzeWithEvaluator, type ModelRun } from "@/lib/content";
+import { persistModelResults } from "@/lib/model-results";
+import { recordItemOutcome } from "@/lib/jobs";
+import { computeConsensus, type ModelScores } from "@/lib/consensus";
+import { createEvaluator, estimateCost, getPanel } from "@/ai/evaluators";
+import type { PerformDiscernAnalysisOutput } from "@/lib/types";
+
+// Stage 2 of the fan-out: ONE model evaluates ONE already-extracted snapshot.
+// Scoping each invocation to a single model keeps it well inside the 60s budget
+// and means a failing provider costs us that evaluator, not the whole item.
 export const maxDuration = 60;
+
+/**
+ * Called by whichever model worker finishes last. Reads every model's verdict,
+ * computes the consensus, and closes the item.
+ *
+ * The write is a compare-and-swap on `status`: if two workers race to finalize,
+ * Postgres picks exactly one winner, and only that winner bumps the job counter.
+ * This is also what makes a QStash redelivery harmless.
+ */
+async function finalizeItem(
+  jobId: string,
+  itemId: string,
+  modelsTotal: number,
+  jobModels: string[] | null
+) {
+  const supabase = createAdminClient();
+
+  const { data: rows } = await supabase
+    .from("analysis_model_results")
+    .select("model_id, status, scores, result")
+    .eq("item_id", itemId);
+
+  const succeeded = (rows ?? []).filter((row) => row.status === "done" && row.scores);
+
+  // Panel order decides whose narrative is shown; fall back to any model that
+  // did succeed if the primary one didn't.
+  const panelOrder = getPanel(jobModels ?? undefined).map((evaluator) => evaluator.id);
+  const primary =
+    succeeded
+      .slice()
+      .sort((a, b) => panelOrder.indexOf(a.model_id) - panelOrder.indexOf(b.model_id))
+      .at(0) ?? null;
+
+  const consensus = computeConsensus(
+    succeeded.map((row): ModelScores => ({
+      modelId: row.model_id,
+      scores: row.scores as Record<string, number>,
+    }))
+  );
+
+  const isCompleted = Boolean(primary);
+
+  const { data: claimed } = await supabase
+    .from("analysis_items")
+    .update({
+      status: isCompleted ? "completed" : "analysis_error",
+      reason: isCompleted ? null : "Every model in the panel failed to analyze this page.",
+      discern_result: (primary?.result as PerformDiscernAnalysisOutput) ?? null,
+      consensus: consensus ?? null,
+      divergence_flag: consensus?.divergenceFlag ?? false,
+      divergent_items: consensus?.divergentItems ?? null,
+      panel_incomplete: succeeded.length < modelsTotal,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", itemId)
+    .eq("status", "processing") // <- only one worker can win this
+    .select("id")
+    .maybeSingle();
+
+  if (!claimed) {
+    return { finalized: false as const };
+  }
+
+  await recordItemOutcome(jobId, isCompleted);
+
+  return {
+    finalized: true as const,
+    isCompleted,
+    modelsSucceeded: succeeded.length,
+    modelsTotal,
+    divergentItems: consensus?.divergentItems ?? [],
+  };
+}
 
 async function handler(request: NextRequest) {
   let jobId: string | undefined;
   let itemId: string | undefined;
+  let modelId: string | undefined;
 
   try {
     const body = await request.json();
     jobId = body.jobId;
     itemId = body.itemId;
+    modelId = body.modelId;
 
-    if (!jobId || !itemId) {
-      return NextResponse.json({ error: "Missing jobId or itemId" }, { status: 400 });
+    if (!jobId || !itemId || !modelId) {
+      return NextResponse.json(
+        { error: "Missing jobId, itemId or modelId" },
+        { status: 400 }
+      );
     }
 
     const supabase = createAdminClient();
 
-    // 1. Fetch the job
-    const { data: job, error: jobError } = await supabase
+    const { data: job } = await supabase
       .from("analysis_jobs")
-      .select("*")
+      .select("language, models")
       .eq("id", jobId)
       .single();
 
-    if (jobError || !job) {
-      console.error("Job not found:", jobId, jobError);
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    }
-
-    // 2. Idempotency guard: claim item only if still pending (compare-and-swap)
     const { data: item } = await supabase
       .from("analysis_items")
-      .update({ status: "processing", updated_at: new Date().toISOString() })
+      .select("id, content_snapshot, content_hash, models_total, status")
       .eq("id", itemId)
-      .eq("status", "pending")
-      .select("id, url, index")
       .single();
 
     if (!item) {
-      // Already claimed or processed — safe to skip (QStash retry or duplicate)
-      return NextResponse.json({ status: "skipped", reason: "already_claimed" });
+      return NextResponse.json({ error: "Item not found" }, { status: 404 });
     }
 
-    // 3. Process the URL
-    const result = await processUrl(item.url, job.language || "pt-BR", true);
-
-    // 4. Update item with result
-    await supabase
-      .from("analysis_items")
-      .update({
-        status: result.status,
-        reason: result.reason ?? null,
-        meta: result.meta ?? null,
-        discern_result: result.discernResult ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", item.id);
-
-    // 5. Atomic counter increment via RPC
-    const isCompleted = result.status === "completed";
-    const rpcName = isCompleted ? "increment_completed" : "increment_failed";
-    const { data: counters, error: rpcError } = await supabase.rpc(rpcName, { p_job_id: jobId });
-
-    if (rpcError) {
-      console.error("RPC counter error:", rpcError);
-      return NextResponse.json({ error: "Counter update failed" }, { status: 500 });
+    if (!item.content_snapshot || !item.content_hash) {
+      // The extract stage owns the snapshot; without it there is nothing to read.
+      return NextResponse.json(
+        { error: "Item has no content snapshot" },
+        { status: 409 }
+      );
     }
 
-    // 6. Check if this worker is the last one (job completion detection)
-    const { completed_urls, failed_urls, total_urls } = counters[0];
-    const processedSoFar = completed_urls + failed_urls;
+    const modelsTotal = item.models_total ?? 1;
+    const language = job?.language || "pt-BR";
+    const evaluator = createEvaluator(modelId);
 
-    if (processedSoFar >= total_urls) {
-      // This is the last worker — finalize job
-      await supabase
-        .from("analysis_jobs")
-        .update({ status: "done", updated_at: new Date().toISOString() })
-        .eq("id", jobId)
-        .eq("status", "processing"); // guard: only if still processing
+    // --- Evaluate. A model failure is recorded, never thrown. ---
+    const startedAt = Date.now();
+    let run: ModelRun;
 
-      // Send completion email (non-fatal)
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
-      try {
-        await sendCompletionEmail(job.user_email, {
-          totalUrls: total_urls,
-          completedUrls: completed_urls,
-          failedUrls: failed_urls,
-          appUrl,
-        });
-      } catch (emailError) {
-        console.error("Failed to send completion email:", emailError);
-      }
-
-      return NextResponse.json({
-        jobId,
-        itemId: item.id,
-        status: "done",
-        totalUrls: total_urls,
-        completedUrls: completed_urls,
-        failedUrls: failed_urls,
+    try {
+      const result = await analyzeWithEvaluator({
+        text: item.content_snapshot,
+        hash: item.content_hash,
+        language,
+        evaluator,
       });
+
+      run = {
+        evaluatorId: evaluator.id,
+        provider: evaluator.provider,
+        status: "done",
+        discernResult: result.discernResult,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        cost: estimateCost(evaluator.id, {
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+        }),
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (e) {
+      console.error(`Model ${modelId} failed on item ${itemId}:`, e);
+      run = {
+        evaluatorId: evaluator.id,
+        provider: evaluator.provider,
+        status: "failed",
+        error: e instanceof Error ? e.message : String(e),
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+
+    await persistModelResults(itemId, [run]);
+
+    // --- Am I the last model to report? ---
+    // Counting rows is naturally idempotent thanks to UNIQUE(item_id, model_id):
+    // a redelivered message overwrites its own row instead of inflating a counter.
+    const { count } = await supabase
+      .from("analysis_model_results")
+      .select("*", { count: "exact", head: true })
+      .eq("item_id", itemId);
+
+    if ((count ?? 0) >= modelsTotal) {
+      const outcome = await finalizeItem(jobId, itemId, modelsTotal, job?.models ?? null);
+      return NextResponse.json({ itemId, modelId, status: run.status, ...outcome });
     }
 
     return NextResponse.json({
-      jobId,
-      itemId: item.id,
-      status: "processed",
-      processedSoFar,
-      totalUrls: total_urls,
+      itemId,
+      modelId,
+      status: run.status,
+      reported: count,
+      modelsTotal,
     });
   } catch (error) {
-    console.error("Worker error for job:", jobId, "item:", itemId, error);
-
-    if (jobId && itemId) {
-      try {
-        const supabase = createAdminClient();
-
-        // Mark only this item as failed
-        await supabase
-          .from("analysis_items")
-          .update({
-            status: "analysis_error",
-            reason: error instanceof Error ? error.message : String(error),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", itemId);
-
-        // Atomic increment of failed counter + check completion
-        const { data: counters } = await supabase.rpc("increment_failed", { p_job_id: jobId });
-
-        if (counters && counters[0]) {
-          const { completed_urls, failed_urls, total_urls } = counters[0];
-          if (completed_urls + failed_urls >= total_urls) {
-            const { data: job } = await supabase
-              .from("analysis_jobs")
-              .select("user_email")
-              .eq("id", jobId)
-              .single();
-
-            await supabase
-              .from("analysis_jobs")
-              .update({ status: "done", updated_at: new Date().toISOString() })
-              .eq("id", jobId)
-              .eq("status", "processing");
-
-            if (job?.user_email) {
-              const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
-              await sendCompletionEmail(job.user_email, {
-                totalUrls: total_urls,
-                completedUrls: completed_urls,
-                failedUrls: failed_urls,
-                appUrl,
-              }).catch((e) => console.error("Failed to send completion email:", e));
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Failed to handle worker error gracefully:", e);
-      }
-    }
-
+    console.error("Analyze worker error:", jobId, itemId, modelId, error);
     return NextResponse.json({ error: "Worker failed" }, { status: 500 });
   }
 }
 
-// Verify QStash signature in production, bypass in local dev
 export async function POST(request: NextRequest) {
   const devBypass = request.headers.get("x-dev-bypass");
   if (devBypass === "1" && !process.env.QSTASH_TOKEN) {

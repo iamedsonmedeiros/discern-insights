@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback } from "react";
-import { Copy, FileText, Info, Award, ListChecks, Star, Bot, AlertCircle, Edit } from "lucide-react";
+import { Copy, FileText, Info, Award, ListChecks, Star, Bot, AlertCircle, Edit, Users, AlertTriangle } from "lucide-react";
+import { ConsensusView } from "@/components/app/consensus-view";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -100,8 +101,11 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
 
   const { discernResult, meta } = activeItem;
   if (!discernResult) return null;
-  
+
   const { domainAverages, scores, justifications } = discernResult;
+
+  const hasConsensus = !!activeItem.consensus;
+  const divergentSet = new Set(activeItem.divergentItems ?? []);
 
   const discernQuestions: Record<string, TranslationKey> = {
     'item01': 'discern.q1', 'item02': 'discern.q2', 'item03': 'discern.q3',
@@ -125,12 +129,29 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
                 <Copy className="h-4 w-4" />
             </Button>
         </div>
+        {activeItem.divergenceFlag && (
+          <Badge
+            variant="outline"
+            className="mt-2 w-fit gap-1 border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {t('consensus.headerBadge').replace('{count}', String(activeItem.divergentItems?.length ?? 0))}
+          </Badge>
+        )}
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="summary">
-          <TabsList className="grid w-full grid-cols-4">
+        <Tabs defaultValue={hasConsensus && activeItem.divergenceFlag ? "consensus" : "summary"}>
+          <TabsList className={cn("grid w-full", hasConsensus ? "grid-cols-5" : "grid-cols-4")}>
             <TabsTrigger value="summary"><Award className="mr-2 h-4 w-4"/>{t('results.tabs.summary')}</TabsTrigger>
             <TabsTrigger value="items"><ListChecks className="mr-2 h-4 w-4"/>{t('results.tabs.items')}</TabsTrigger>
+            {hasConsensus && (
+              <TabsTrigger value="consensus" className="relative">
+                <Users className="mr-2 h-4 w-4"/>{t('results.tabs.consensus')}
+                {activeItem.divergenceFlag && (
+                  <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-500" />
+                )}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="recommendations"><FileText className="mr-2 h-4 w-4"/>{t('results.tabs.recommendations')}</TabsTrigger>
             <TabsTrigger value="metadata"><Info className="mr-2 h-4 w-4"/>{t('results.tabs.metadata')}</TabsTrigger>
           </TabsList>
@@ -180,7 +201,12 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
                     <AccordionItem value={key} key={key}>
                         <AccordionTrigger>
                             <div className="flex justify-between items-center w-full pr-4">
-                                <span>{t(discernQuestions[key]) || key}</span>
+                                <span className="flex items-center gap-2 text-left">
+                                    {t(discernQuestions[key]) || key}
+                                    {divergentSet.has(key) && (
+                                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                                    )}
+                                </span>
                                 <ScoreStar score={score} />
                             </div>
                         </AccordionTrigger>
@@ -191,6 +217,12 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
                 ))}
             </Accordion>
           </TabsContent>
+
+          {hasConsensus && (
+            <TabsContent value="consensus" className="mt-4">
+              <ConsensusView item={activeItem} questions={discernQuestions} />
+            </TabsContent>
+          )}
 
           <TabsContent value="recommendations" className="mt-4">
             <Card>
