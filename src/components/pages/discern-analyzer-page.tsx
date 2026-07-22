@@ -4,9 +4,9 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus } from "@/app/actions";
+import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
-import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv } from "@/lib/utils";
+import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, cn } from "@/lib/utils";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
 import { supabase } from "@/lib/supabase";
 
@@ -50,11 +50,24 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
 
+  // Model panel selection (background jobs). Empty selection = full panel.
+  const [availableModels, setAvailableModels] = useState<{ id: string; displayName: string }[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+
   // Background job state
   const [isSendingToBackground, setIsSendingToBackground] = useState(false);
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const [backgroundJobStatus, setBackgroundJobStatus] = useState<string | null>(null);
   const [backgroundProgress, setBackgroundProgress] = useState<{ completed: number; failed: number; total: number } | null>(null);
+
+  useEffect(() => {
+    fetchAvailableModels()
+      .then((models) => {
+        setAvailableModels(models);
+        setSelectedModels(models.map((m) => m.id)); // default: all on
+      })
+      .catch((e) => console.error("Failed to load available models:", e));
+  }, []);
 
   useEffect(() => {
     isProcessingRef.current = isProcessing;
@@ -260,7 +273,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     });
 
     try {
-      const result = await processUrl(nextItem.url, locale);
+      const result = await processUrl(nextItem.url, locale, false, nextItem.id);
       const updatedItem = { ...nextItem, ...result, status: result.status, updatedAt: new Date().toISOString() };
       
       setItems((prev) =>
@@ -453,7 +466,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       const res = await fetch('/api/jobs/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: locale, keyword }),
+        body: JSON.stringify({ language: locale, keyword, models: selectedModels }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
@@ -650,6 +663,41 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                       onChange={(e) => setKeyword(e.target.value)}
                       className="text-sm border-slate-200"
                     />
+                  )}
+                  {availableModels.length > 1 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {t('controls.panelLabel')} ({selectedModels.length}/{availableModels.length})
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {availableModels.map((m) => {
+                          const checked = selectedModels.includes(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedModels((prev) =>
+                                  checked ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                                )
+                              }
+                              className={cn(
+                                "rounded-full border px-3 py-1 text-xs transition-colors",
+                                checked
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-slate-200 text-muted-foreground hover:bg-muted"
+                              )}
+                              data-testid={`model-toggle-${m.id}`}
+                            >
+                              {m.displayName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedModels.length === 0 && (
+                        <p className="text-xs text-amber-600">{t('controls.panelEmptyHint')}</p>
+                      )}
+                    </div>
                   )}
                   <Button
                     variant="outline"

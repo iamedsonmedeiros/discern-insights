@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Client } from "@upstash/qstash";
 import { createClient } from "@/lib/supabase-server";
+import { publish } from "@/lib/queue";
+import { getAvailableModels } from "@/ai/evaluators";
 
 // Vercel Hobby: max 30 seconds should be plenty for job creation
 export const maxDuration = 30;
@@ -22,7 +23,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { language = "pt-BR", keyword = "" } = await request.json().catch(() => ({}));
+    const {
+      language = "pt-BR",
+      keyword = "",
+      models: requestedModels,
+    } = await request.json().catch(() => ({}));
+
+    // The panel the user picked, intersected with what this deployment allows —
+    // never trust an arbitrary model id from the client. Empty selection falls
+    // back to the full available panel.
+    const allowed = getAvailableModels().map((m) => m.id);
+    const selected = Array.isArray(requestedModels)
+      ? allowed.filter((id) => requestedModels.includes(id))
+      : allowed;
+    const panel = (selected.length > 0 ? selected : allowed);
 
     // 1. Fetch all pending items for this user
     const { data: pendingItems, error: fetchError } = await supabase
@@ -47,7 +61,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Create a new analysis job record (status = processing immediately)
+    // 2. Create a new analysis job record (status = processing immediately).
+    //    The panel is stamped on the job: which models judged a page is part of
+    //    the result, not an environment detail.
     const { data: job, error: jobError } = await supabase
       .from("analysis_jobs")
       .insert({
@@ -59,6 +75,7 @@ export async function POST(request: NextRequest) {
         status: "processing",
         language,
         keyword,
+        models: panel,
       })
       .select()
       .single();
@@ -83,34 +100,22 @@ export async function POST(request: NextRequest) {
       // Non-fatal — continue
     }
 
-    const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
-    const workerUrl = `${appUrl}/api/worker/analyze`;
-
-    // 4. Fan-out: publish one QStash message per item with staggered delays
-    if (process.env.QSTASH_TOKEN) {
-      const qstash = new Client({ token: process.env.QSTASH_TOKEN });
-
-      const messages = pendingItems.map((item, i) => ({
-        url: workerUrl,
+    // 4. Fan-out stage 1: one extraction message per URL. Each extractor then
+    //    fans out again, one analysis message per model — so the panel size does
+    //    not need to be known here beyond recording it on the job.
+    await publish(
+      pendingItems.map((item, i) => ({
+        path: "/api/worker/extract",
         body: { jobId: job.id, itemId: item.id },
-        delay: Math.floor(i / PARALLEL_LIMIT) * STAGGER_DELAY_SECONDS,
-        retries: 2,
-      }));
+        delaySeconds: Math.floor(i / PARALLEL_LIMIT) * STAGGER_DELAY_SECONDS,
+      }))
+    );
 
-      await qstash.batchJSON(messages);
-    } else {
-      // Development fallback: call worker directly for each item (fire and forget)
-      for (const item of pendingItems) {
-        fetch(workerUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-dev-bypass": "1" },
-          body: JSON.stringify({ jobId: job.id, itemId: item.id }),
-        }).catch((e) => console.error("Direct worker call failed:", e));
-      }
-    }
-
-    return NextResponse.json({ jobId: job.id, totalUrls: pendingItems.length });
+    return NextResponse.json({
+      jobId: job.id,
+      totalUrls: pendingItems.length,
+      models: panel,
+    });
   } catch (error) {
     console.error("Error in /api/jobs/start:", error);
     return NextResponse.json(

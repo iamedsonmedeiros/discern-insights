@@ -1,15 +1,13 @@
 "use server";
 
-import { performDiscernAnalysis } from "@/ai/flows/perform-discern-analysis";
-import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
-import { redis, normalizeUrlForCache, isRedisConfigured } from "@/lib/redis";
+import { extractContent, runPanel, runDiscernAnalysis } from "@/lib/content";
+import { persistModelResults } from "@/lib/model-results";
+import { computeConsensus } from "@/lib/consensus";
+import { getPanel, getAvailableModels, estimateCost, GEMINI_EVALUATOR_ID } from "@/ai/evaluators";
 // Reverted pdf-parse
-const MODEL_ID = 'googleai/gemini-2.5-flash';
-const COST_PER_1M_INPUT = 0.075;
-const COST_PER_1M_OUTPUT = 0.30;
 
 // --- Helper to get authenticated user ---
 async function getAuthenticatedUser() {
@@ -55,10 +53,78 @@ export async function fetchAnalysisItems(options?: { jobId?: string, onlyUnassig
       meta: item.meta,
       discernResult: item.discern_result,
       updatedAt: item.updated_at,
-      jobId: item.job_id
+      jobId: item.job_id,
+      consensus: item.consensus,
+      divergenceFlag: item.divergence_flag,
+      divergentItems: item.divergent_items,
+      panelIncomplete: item.panel_incomplete,
+      modelsTotal: item.models_total,
     }));
   } catch (e) {
     console.error("fetchAnalysisItems failed:", e);
+    return [];
+  }
+}
+
+/** The models the user may pick for a job's panel (config- and key-gated). */
+export async function fetchAvailableModels(): Promise<{ id: string; displayName: string }[]> {
+  return getAvailableModels();
+}
+
+export type ModelResultRow = {
+  modelId: string;
+  provider: string;
+  status: "done" | "failed";
+  scores: Record<string, number> | null;
+  justifications: Record<string, string> | null;
+  cost: number;
+  latencyMs: number | null;
+  error: string | null;
+};
+
+/**
+ * Per-model verdicts for one item — the raw material behind the consensus, so
+ * the UI can show each model's score and justification side by side. Loaded on
+ * demand (not with every item) because the justifications are bulky.
+ *
+ * RLS on analysis_model_results already scopes rows to items the user owns; the
+ * explicit ownership check here is defense in depth.
+ */
+export async function fetchModelResults(itemId: string): Promise<ModelResultRow[]> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+
+    const { data: item } = await supabase
+      .from("analysis_items")
+      .select("id")
+      .eq("id", itemId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!item) return [];
+
+    const { data, error } = await supabase
+      .from("analysis_model_results")
+      .select("model_id, provider, status, scores, justifications, cost, latency_ms, error")
+      .eq("item_id", itemId);
+
+    if (error) {
+      console.error("Error fetching model results:", error);
+      return [];
+    }
+
+    return (data || []).map((row) => ({
+      modelId: row.model_id,
+      provider: row.provider,
+      status: row.status as "done" | "failed",
+      scores: row.scores as Record<string, number> | null,
+      justifications: row.justifications as Record<string, string> | null,
+      cost: Number(row.cost) || 0,
+      latencyMs: row.latency_ms,
+      error: row.error,
+    }));
+  } catch (e) {
+    console.error("fetchModelResults failed:", e);
     return [];
   }
 }
@@ -124,6 +190,14 @@ export async function upsertAnalysisItem(item: Partial<AnalysisItem>) {
   if (item.reason !== undefined) dataToUpsert.reason = item.reason;
   if (item.meta !== undefined) dataToUpsert.meta = item.meta;
   if (item.discernResult !== undefined) dataToUpsert.discern_result = item.discernResult;
+  if (item.contentSnapshot !== undefined) dataToUpsert.content_snapshot = item.contentSnapshot;
+  if (item.contentHash !== undefined) dataToUpsert.content_hash = item.contentHash;
+  if (item.extractionMethod !== undefined) dataToUpsert.extraction_method = item.extractionMethod;
+  if (item.consensus !== undefined) dataToUpsert.consensus = item.consensus;
+  if (item.divergenceFlag !== undefined) dataToUpsert.divergence_flag = item.divergenceFlag;
+  if (item.divergentItems !== undefined) dataToUpsert.divergent_items = item.divergentItems;
+  if (item.panelIncomplete !== undefined) dataToUpsert.panel_incomplete = item.panelIncomplete;
+  if (item.modelsTotal !== undefined) dataToUpsert.models_total = item.modelsTotal;
 
   const { data, error } = await supabase
     .from('analysis_items')
@@ -215,251 +289,121 @@ export async function saveImportedUrls(items: { id: string, url: string, index: 
 
 // --- Content Processing & Analysis ---
 
-function htmlToText(html: string): string {
-  // If content looks like Jina AI Markdown (starts with title or URL)
-  // We can do some minor cleaning but mostly Markdown is good for the AI.
-  if (html.includes('Markdown Content:') || html.startsWith('# ') || html.includes('---')) {
-    // Just remove some Jina specific headers if they exist
-    return html.replace(/^(Title: .*?\n|URL Source: .*?\n|Markdown Content:.*?\n)/gm, "").trim();
-  }
+export type ProcessUrlResult = Pick<
+  AnalysisItem,
+  | "status"
+  | "reason"
+  | "meta"
+  | "discernResult"
+  | "modelId"
+  | "inputTokens"
+  | "outputTokens"
+  | "totalCost"
+  | "contentSnapshot"
+  | "contentHash"
+  | "extractionMethod"
+  | "consensus"
+  | "divergenceFlag"
+  | "divergentItems"
+  | "panelIncomplete"
+  | "modelsTotal"
+>;
 
-  // Remove script, style, and head elements
-  let cleanHtml = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
-  cleanHtml = cleanHtml.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
-  cleanHtml = cleanHtml.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "");
-
-  // Convert block-level elements to newlines
-  cleanHtml = cleanHtml.replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, "\n");
-
-  // Remove all remaining HTML tags
-  cleanHtml = cleanHtml.replace(/<[^>]+>/g, " ");
-
-  // Replace multiple newlines/spaces with a single one
-  cleanHtml = cleanHtml.replace(/(\s*\n\s*)+/g, "\n");
-  cleanHtml = cleanHtml.replace(/[ \t]+/g, " ");
-
-  // Decode HTML entities
-  cleanHtml = cleanHtml.replace(/&nbsp;/g, " ");
-  cleanHtml = cleanHtml.replace(/&amp;/g, "&");
-  cleanHtml = cleanHtml.replace(/&lt;/g, "<");
-  cleanHtml = cleanHtml.replace(/&gt;/g, ">");
-  cleanHtml = cleanHtml.replace(/&quot;/g, '"');
-  cleanHtml = cleanHtml.replace(/&#39;/g, "'");
-
-  return cleanHtml.trim();
-}
-
+/**
+ * Orchestrates the two-stage pipeline: extract an immutable content snapshot,
+ * then have the whole model panel evaluate it blind.
+ *
+ * With `DISCERN_MODELS` unset the panel is a single model, so this behaves
+ * exactly like the original single-model pipeline. The primary (first) model's
+ * verdict is what lands on the item; every model's verdict is also recorded in
+ * `analysis_model_results` for the consensus step (Phase 2).
+ */
 export async function processUrl(
   url: string,
   language: string = 'pt-BR',
-  skipAuth: boolean = false
-): Promise<Pick<AnalysisItem, "status" | "reason" | "meta" | "discernResult">> {
+  skipAuth: boolean = false,
+  itemId?: string
+): Promise<ProcessUrlResult> {
   // Ensure user is authenticated before processing, unless skipped (for workers)
   if (!skipAuth) {
     await getAuthenticatedUser();
   }
 
-  let status: AnalysisStatus = "processing";
-  let reason: string | undefined;
-  let meta: AnalysisItem["meta"] = {};
-  let discernResult: AnalysisItem["discernResult"] | undefined;
-  const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
+  // --- Stage 1: extraction (snapshot) ---
+  const extraction = await extractContent(url);
 
-  // --- 1. Cache Check ---
-  const normalizedUrl = normalizeUrlForCache(url);
-  const cacheKey = `analysis:${normalizedUrl}`;
-
-  if (isRedisConfigured()) {
-    try {
-      const cached = await redis.get(cacheKey);
-      if (cached) {
-        console.log(`Cache hit for ${url}`);
-        // If it's cached, it must be the full result or a special state
-        return cached as any; 
-      }
-    } catch (e) {
-      console.warn("Redis read failed, continuing without cache:", e);
-    }
-  }
-
-  // Immediately check for direct YouTube/Vimeo/Instagram/TikTok URLs
-  if (/youtube\.com|youtu\.be|vimeo\.com|instagram\.com\/reel\/|tiktok\.com/.test(url)) {
+  if (!extraction.ok) {
     return {
-      status: "not_eligible_video",
-      reason: "DISCERN does not analyze videos",
-      meta,
+      status: extraction.status,
+      reason: extraction.reason,
+      meta: extraction.meta,
     };
   }
 
-  // Immediately check for direct PDF URLs by extension
-  if (url.toLowerCase().endsWith('.pdf')) {
-    return {
-      status: "not_eligible_pdf",
-      reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
-      meta,
-    };
-  }
-
-
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-
-  try {
-    // Try Jina AI first for robust extraction (JS-heavy sites, clean markdown)
-    let html = "";
-    try {
-      const jinaUrl = `https://r.jina.ai/${url}`;
-      const jinaResponse = await fetch(jinaUrl, {
-        headers: { "X-Return-Format": "markdown" },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (jinaResponse.ok) {
-        html = await jinaResponse.text();
-        console.log(`Successfully scraped using Jina AI: ${url}`);
-      }
-    } catch (jinaError) {
-      console.warn(`Jina AI scraping failed for ${url}, falling back to native fetch.`, jinaError);
-    }
-
-    // Fallback to native fetch if Jina fails or returned empty
-    if (!html) {
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-          "Accept-Encoding": "gzip, deflate, br",
-          "Cache-Control": "max-age=0",
-          "DNT": "1",
-          "Upgrade-Insecure-Requests": "1"
-        },
-        redirect: "follow",
-        signal: AbortSignal.timeout(20000),
-      });
-
-      meta.httpStatus = response.status;
-
-      if (!response.ok) {
-        return {
-          status: "unavailable_offline",
-          reason: `HTTP Error: ${response.status} ${response.statusText}`,
-          meta,
-        };
-      }
-
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("application/pdf")) {
-        return {
-          status: "not_eligible_pdf",
-          reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
-          meta,
-        };
-      } else {
-        html = await response.text();
-
-      }
-    }
-
-    // Check for security verification pages (e.g. Cloudflare, generic protection) - AFTER all scraping attempts
-    const isSecurityPage = /verify you are human|estabelecendo uma conexão segura|verifique se você é humano|bot verification|security check|request id/i.test(html);
-    if (isSecurityPage && html.length < 10000) {
-      return {
-        status: "scraping_error",
-        reason: "A página retornou uma verificação de segurança (Bot Protection). Faça a análise manual dessa página.",
-        meta,
-      };
-    }
-    meta.size = html.length;
-
-    if (!meta.title) {
-      const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
-      meta.title = titleMatch ? titleMatch[1] : "No title";
-    }
-
-    let textContent = htmlToText(html);
-
-    const hasVideoEmbed = html.includes('<video') || /youtube\.com\/embed|vimeo\.com\/player/.test(html);
-    if (hasVideoEmbed && textContent.length < MIN_TEXT_LENGTH_FOR_VIDEO_PAGES) {
-      return {
-        status: "not_eligible_video",
-        reason: "Content is primarily video with insufficient text.",
-        meta,
-      };
-    }
-
-    if (!textContent) {
-      return {
-        status: "scraping_error",
-        reason: "Could not extract text content from the page.",
-        meta,
-      };
-    }
-
-    if (textContent.length > 30000) {
-      try {
-        const summaryResult = await summarizeLongContent({ text: textContent, language });
-        textContent = summaryResult.summary;
-        totalInputTokens += summaryResult.usage?.inputTokens || 0;
-        totalOutputTokens += summaryResult.usage?.outputTokens || 0;
-      } catch (e) {
-        console.error("Summarization failed:", e);
-        // Continue with truncated content if summarization fails
-        textContent = textContent.substring(0, 30000);
-      }
-    }
-
-    try {
-      discernResult = await performDiscernAnalysis({ text: textContent, language });
-      totalInputTokens += discernResult.usage?.inputTokens || 0;
-      totalOutputTokens += discernResult.usage?.outputTokens || 0;
-      status = "completed";
-    } catch (e) {
-      console.error("DISCERN analysis failed:", e);
-      status = "analysis_error";
-      reason =
-        e instanceof Error ? e.message : "Unknown error during analysis.";
-    }
-  } catch (error) {
-    status = "scraping_error";
-    if (error instanceof Error) {
-      if (error.name === "TimeoutError" || error.name === 'AbortError') {
-        reason = "The request timed out after 25 seconds.";
-      } else {
-        reason = `Extraction failed: ${error.message}`;
-      }
-    } else {
-      reason = "An unknown extraction error occurred.";
-    }
-  }
-
-  const inputCost = (totalInputTokens / 1000000) * COST_PER_1M_INPUT;
-  const outputCost = (totalOutputTokens / 1000000) * COST_PER_1M_OUTPUT;
-  const totalCost = inputCost + outputCost;
-
-  const finalResult = { 
-    status, 
-    reason, 
-    meta, 
-    discernResult,
-    modelId: MODEL_ID,
-    inputTokens: totalInputTokens,
-    outputTokens: totalOutputTokens,
-    totalCost: totalCost
+  const snapshot = {
+    contentSnapshot: extraction.text,
+    contentHash: extraction.hash,
+    extractionMethod: extraction.extractionMethod,
   };
 
-  // --- 4. Cache Save ---
-  if (status === "completed" && isRedisConfigured()) {
-    try {
-      // Cache the result for 7 days (604800 seconds)
-      await redis.set(cacheKey, finalResult, { ex: 604800 });
-      console.log(`Saved result to cache for ${url}`);
-    } catch (e) {
-      console.warn("Redis write failed:", e);
-    }
+  // --- Stage 2: the panel evaluates the snapshot ---
+  const { runs, prepInputTokens, prepOutputTokens } = await runPanel({
+    text: extraction.text,
+    hash: extraction.hash,
+    language,
+    evaluators: getPanel(),
+  });
+
+  if (itemId) {
+    await persistModelResults(itemId, runs);
   }
 
-  return finalResult;
+  const primary = runs[0];
+
+  if (primary.status !== "done" || !primary.discernResult) {
+    return {
+      status: "analysis_error",
+      reason: primary.error ?? "Unknown error during analysis.",
+      meta: extraction.meta,
+      ...snapshot,
+    };
+  }
+
+  // Item-level totals cover the whole panel: with one model configured this is
+  // identical to before, and with several it reports what was actually spent.
+  const inputTokens =
+    prepInputTokens + runs.reduce((sum, run) => sum + run.inputTokens, 0);
+  const outputTokens =
+    prepOutputTokens + runs.reduce((sum, run) => sum + run.outputTokens, 0);
+  const totalCost =
+    estimateCost(GEMINI_EVALUATOR_ID, {
+      inputTokens: prepInputTokens,
+      outputTokens: prepOutputTokens,
+    }) + runs.reduce((sum, run) => sum + run.cost, 0);
+
+  const succeeded = runs.filter((run) => run.status === "done" && run.discernResult);
+  const consensus = computeConsensus(
+    succeeded.map((run) => ({
+      modelId: run.evaluatorId,
+      scores: run.discernResult!.scores as unknown as Record<string, number>,
+    }))
+  );
+
+  return {
+    status: "completed",
+    meta: extraction.meta,
+    discernResult: primary.discernResult,
+    modelId: primary.evaluatorId,
+    inputTokens,
+    outputTokens,
+    totalCost,
+    consensus: consensus ?? undefined,
+    divergenceFlag: consensus?.divergenceFlag ?? false,
+    divergentItems: consensus?.divergentItems,
+    panelIncomplete: succeeded.length < runs.length,
+    modelsTotal: runs.length,
+    ...snapshot,
+  };
 }
 
 export async function analyzeTextDirectly(
@@ -469,20 +413,9 @@ export async function analyzeTextDirectly(
   // Ensure user is authenticated
   await getAuthenticatedUser();
 
-  let textContent = text;
-  if (textContent.length > 30000) {
-    try {
-      const summaryResult = await summarizeLongContent({ text: textContent, language });
-      textContent = summaryResult.summary;
-    } catch (e) {
-      console.error("Summarization failed during manual analysis:", e);
-      textContent = textContent.substring(0, 30000);
-    }
-  }
-
   try {
-    const discernResult = await performDiscernAnalysis({ text: textContent, language });
-    return discernResult;
+    const { discernResult } = await runDiscernAnalysis(text, language);
+    return discernResult!;
   } catch (e) {
     console.error("DISCERN analysis failed during manual analysis:", e);
     const message = e instanceof Error ? e.message : "Unknown error during analysis.";
