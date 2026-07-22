@@ -1,14 +1,25 @@
 # Plano: Análise DISCERN Multi-LLM com Consenso Cego
 
-> Status: **Fase 0 ✅ · Fase 1 ✅ · Fase 2 ✅ · Fase 3 ✅** — funcionalidade completa de ponta a ponta.
+> Status: **Fase 0 ✅ · Fase 1 ✅ · Fase 2 ✅ · Fase 3 ✅ · Fase 4 ✅** (rigor acadêmico).
 > Objetivo: substituir a avaliação de modelo único (Gemini 2.5 Flash) por um painel de LLMs que avaliam a mesma página de forma cega e independente. O sistema calcula a média por item e sinaliza alerta quando os modelos divergem em mais de 1 ponto.
 >
 > **Ações manuais pendentes:**
 > 1. ✅ Migrations aplicadas (content_snapshot, model_results, consensus).
 > 2. ✅ Redis recriado (`vital-mammal-161762`).
 > 3. ✅ Crédito OpenRouter adicionado ($5). Painel misto (Google + OpenRouter) verificado funcionando.
-> 4. **Em produção (Vercel): setar `OPENROUTER_API_KEY` e `DISCERN_MODELS`.** Sem elas, o painel cai para só Gemini (default seguro).
-> 5. **Faltou apenas exportação com colunas por modelo** (CSV/artigo) — item 3 da Fase 3 abaixo. Não bloqueia o uso.
+> 4. ✅ Deploy em produção confirmado (código no ar; env vars setadas).
+> 5. **Rodar 1 URL de teste em produção** antes de um lote grande — as env vars ainda não foram exercitadas por um job real (todos os jobs no banco são anteriores ao pipeline novo).
+
+**Fase 4 — Rigor acadêmico e polimento ✅**
+- **ICC (concordância entre avaliadores)** — `src/lib/reliability.ts`. ICC(2,1) e ICC(2,k), efeitos aleatórios de duas vias, concordância absoluta (o modelo correto quando páginas E modelos são amostras, e quando importa a concordância absoluta — que é o que a divergência sinaliza). Validado contra Shrout & Fleiss (1979): 0.290 / 0.620 exatos. Um bug pego pelos testes: numerador negativo ÷ denominador negativo dava ICC > 1; corrigido com checagem do componente de variância + clamp [0,1]. Superfície na UI via `ReliabilityCard`; relatório de terminal via `scripts/report-reliability.ts`.
+  - **Resultado real no painel de 3 modelos:** ICC(2,1)=0.592 (um modelo, moderado) vs ICC(2,k)=0.813 (consenso, bom). É o argumento quantitativo que justifica o painel.
+- **Exportação de consenso em formato longo** — `exportConsensusCsv` em `src/lib/utils.ts`. Uma linha por URL×item, com score de cada modelo em coluna própria + média/sd/min/max/range/diverged. Formato pronto para R/SPSS (ICC/Krippendorff sem reshape).
+- **Custo em cache hit corrigido** — `analyzeWithEvaluator` zera tokens/custo em cache hit (o uso real fica na linha original de `analysis_model_results`). Evita inflar totais do job e cobrar por trabalho não feito.
+
+**Ainda em aberto (não bloqueia uso):**
+- Exportação DOCX/artigo científico ainda usa só o modelo primário (o CSV de consenso cobre a necessidade de dados).
+- Krippendorff's alpha não implementado (ICC cobre o caso; alpha seria redundante para dados de intervalo).
+- Taxa de falha de scraping ~30% nos jobs antigos — não relacionado a este trabalho, mas vale investigar.
 
 ---
 
