@@ -42,6 +42,8 @@ export type DiscernAnalysisRun = {
   discernResult: AnalysisItem["discernResult"];
   inputTokens: number;
   outputTokens: number;
+  /** True when served from cache — no tokens were spent, so cost must be zero. */
+  cached?: boolean;
 };
 
 export function computeContentHash(text: string): string {
@@ -339,7 +341,16 @@ export async function analyzeWithEvaluator(params: {
       const cached = await redis.get(cacheKey);
       if (cached) {
         console.log(`Analysis cache hit for ${evaluator.id}:${hash}`);
-        return cached as DiscernAnalysisRun;
+        // A cache hit spends nothing, so it must not re-report the tokens of the
+        // run that populated it — otherwise repeated analyses inflate job totals
+        // and would bill the user for work that never happened. The real usage
+        // stays recorded on the original analysis_model_results row.
+        return {
+          ...(cached as DiscernAnalysisRun),
+          inputTokens: 0,
+          outputTokens: 0,
+          cached: true,
+        };
       }
     } catch (e) {
       console.warn("Redis analysis read failed, continuing without cache:", e);

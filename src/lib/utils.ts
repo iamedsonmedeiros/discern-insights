@@ -157,6 +157,67 @@ export function exportScoreSheetCsv(data: AnalysisItem[], filename: string) {
     document.body.removeChild(link);
 }
 
+/**
+ * Long-format consensus export: one row per (URL x DISCERN item), with each
+ * model's raw score in its own column alongside the consensus statistics.
+ *
+ * Long format rather than wide because this is the shape statistical software
+ * expects for inter-rater analysis — it can be fed straight into an ICC or
+ * Krippendorff routine without reshaping.
+ */
+export function exportConsensusCsv(data: AnalysisItem[], filename: string) {
+    const withConsensus = data.filter(item => item.consensus);
+    if (withConsensus.length === 0) return;
+
+    // Union of every model seen, so the column layout is stable across rows even
+    // when a model failed on some pages.
+    const models = Array.from(
+        new Set(withConsensus.flatMap(item => item.consensus!.models))
+    ).sort();
+
+    const headers = [
+        'url', 'title', 'item', 'question',
+        'consensus_mean', 'sd', 'min', 'max', 'range', 'diverged',
+        ...models.map(m => `score_${m}`),
+    ];
+
+    const rows: string[] = [];
+
+    for (const item of withConsensus) {
+        const consensus = item.consensus!;
+        for (let i = 1; i <= 16; i++) {
+            const key = `item${String(i).padStart(2, '0')}`;
+            const stat = consensus.perItem[key];
+            if (!stat) continue;
+
+            rows.push([
+                escapeCsvField(item.url),
+                escapeCsvField(item.meta?.title),
+                escapeCsvField(key),
+                escapeCsvField(discernQuestions[key] ?? key),
+                escapeCsvField(stat.mean),
+                escapeCsvField(stat.sd),
+                escapeCsvField(stat.min),
+                escapeCsvField(stat.max),
+                escapeCsvField(stat.range),
+                escapeCsvField(stat.range > 1 ? 'yes' : 'no'),
+                ...models.map(m => escapeCsvField(stat.values[m] ?? '')),
+            ].join(','));
+        }
+    }
+
+    const csvString = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([`\uFEFF${csvString}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 const discernQuestions: Record<string, string> = {
     'item01': '1. Os objetivos são claros?',
     'item02': '2. A publicação atinge seus objetivos?',

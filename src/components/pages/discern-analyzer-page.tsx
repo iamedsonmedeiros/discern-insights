@@ -2,11 +2,12 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2 } from "lucide-react";
+import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
-import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, cn } from "@/lib/utils";
+import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
+import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
 import { supabase } from "@/lib/supabase";
 
@@ -737,6 +738,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
               </CardContent>
             </Card>
 
+            <ReliabilityCard items={processedItems} />
+
             <Card>
               <CardHeader>
                 <CardTitle>{t('export.title')}</CardTitle>
@@ -751,6 +754,15 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                 </Button>
                 <Button variant="outline" className="w-full" onClick={() => exportScoreSheetCsv(processedItems, 'discern_scores_matrix')} disabled={processedItems.length === 0}>
                   {t('export.scores') || 'Planilha de Scores (Matriz)'}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => exportConsensusCsv(processedItems, 'discern_consensus_long')}
+                  disabled={!processedItems.some(i => i.consensus)}
+                >
+                  <Users2 className="mr-2 h-4 w-4" />
+                  {t('export.consensusCsv')}
                 </Button>
                 <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
                   {isGeneratingArticle ? (
