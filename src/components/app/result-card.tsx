@@ -13,6 +13,8 @@ import { Progress } from "@/components/ui/progress";
 import type { AnalysisItem } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { getReportedScores, shortModelName } from "@/lib/reported-scores";
+import { isCurrentInstrument } from "@/lib/discern-items";
 import { useI18n } from "@/components/i18n/use-i18n";
 import type { TranslationKey } from "@/components/i18n/translations";
 
@@ -23,13 +25,17 @@ type ResultCardProps = {
 };
 
 
-const ScoreStar = ({ score }: { score: number }) => (
+const ScoreStar = ({ score }: { score: number | null }) => {
+    const { t } = useI18n();
+    if (score == null) return <span className="text-sm text-muted-foreground">{t('results.notRated')}</span>;
+    return (
     <div className="flex">
         {[1,2,3,4,5].map(s => (
             <Star key={s} className={cn("h-5 w-5", s <= score ? "text-yellow-400 fill-yellow-400" : "text-gray-300")} />
         ))}
     </div>
-);
+    );
+};
 
 
 export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: ResultCardProps) {
@@ -102,7 +108,12 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
   const { discernResult, meta } = activeItem;
   if (!discernResult) return null;
 
-  const { domainAverages, scores, justifications } = discernResult;
+  const { scores, justifications } = discernResult;
+  const reported = getReportedScores(activeItem)!;
+  const { domainAverages } = reported;
+  const narrativeNote = reported.narrativeModel
+    ? t('results.narrativeBy', { model: shortModelName(reported.narrativeModel) })
+    : t('results.narrativePrimary');
 
   const hasConsensus = !!activeItem.consensus;
   const divergentSet = new Set(activeItem.divergentItems ?? []);
@@ -140,6 +151,13 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
         )}
       </CardHeader>
       <CardContent>
+        {!isCurrentInstrument(discernResult) && (
+          <Alert className="mb-4 border-amber-500 text-amber-800 dark:text-amber-300 [&>svg]:text-amber-600">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>{t('results.legacy.title')}</AlertTitle>
+            <AlertDescription>{t('results.legacy.description')}</AlertDescription>
+          </Alert>
+        )}
         <Tabs defaultValue={hasConsensus && activeItem.divergenceFlag ? "consensus" : "summary"}>
           <TabsList className={cn("grid w-full", hasConsensus ? "grid-cols-5" : "grid-cols-4")}>
             <TabsTrigger value="summary"><Award className="mr-2 h-4 w-4"/>{t('results.tabs.summary')}</TabsTrigger>
@@ -177,6 +195,15 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
                     </CardHeader>
                 </Card>
             </div>
+            {hasConsensus && (
+              <p className="text-xs text-muted-foreground">
+                {t('results.summary.panelMean', {
+                  count: reported.models.length,
+                  models: reported.models.map(shortModelName).join(", "),
+                })}{" "}
+                {narrativeNote}
+              </p>
+            )}
             <Card>
                 <CardHeader>
                     <CardTitle>{t('results.summary.executiveSummary')}</CardTitle>
@@ -196,6 +223,7 @@ export function ResultCard({ activeItem, isLoading, onManualAnalysisClick }: Res
           </TabsContent>
           
           <TabsContent value="items" className="mt-4">
+             {hasConsensus && <p className="mb-2 text-xs text-muted-foreground">{narrativeNote}</p>}
              <Accordion type="single" collapsible className="w-full">
                 {Object.entries(scores).sort(([a], [b]) => a.localeCompare(b)).map(([key, score]) => (
                     <AccordionItem value={key} key={key}>

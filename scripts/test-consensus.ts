@@ -4,7 +4,9 @@
  *   npx tsx scripts/test-consensus.ts
  */
 
+import { normalizeDiscernOutput } from "@/ai/discern-schema";
 import { computeConsensus, DISCERN_ITEMS, type ModelScores } from "@/lib/consensus";
+import { INSTRUMENT_VERSION } from "@/lib/discern-items";
 
 let failures = 0;
 
@@ -18,8 +20,8 @@ function check(name: string, condition: boolean, detail = "") {
 }
 
 /** A model that scores every DISCERN item the same, except where overridden. */
-function model(modelId: string, base: number, overrides: Record<string, number> = {}): ModelScores {
-  const scores: Record<string, number> = {};
+function model(modelId: string, base: number, overrides: Record<string, number | null> = {}): ModelScores {
+  const scores: Record<string, number | null> = {};
   for (const item of DISCERN_ITEMS) scores[item] = base;
   return { modelId, scores: { ...scores, ...overrides } };
 }
@@ -75,6 +77,50 @@ console.log("\nDomain averages come from the consensus means:");
   check("reliability domain averages the item means", c.domainAverages.confiabilidade === 3, `got ${c.domainAverages.confiabilidade}`);
   check("treatment domain averages the item means", c.domainAverages.qualidade_tratamento === 3, `got ${c.domainAverages.qualidade_tratamento}`);
   check("overall score is item16's mean", c.domainAverages.score_geral === 5, `got ${c.domainAverages.score_geral}`);
+}
+
+console.log("\nQuestion 2 left unrated:");
+{
+  const c = computeConsensus([
+    model("a", 3, { item02: null }),
+    model("b", 3, { item02: null }),
+  ])!;
+  check("an unrated item has no mean", c.perItem.item02.mean === null);
+  check("an unrated item is not divergent", !c.divergentItems.includes("item02"));
+  check("reliability excludes the unrated item", c.domainAverages.confiabilidade === 3, `got ${c.domainAverages.confiabilidade}`);
+}
+
+console.log("\nMixed rated and unrated Question 2:");
+{
+  const c = computeConsensus([
+    model("a", 4, { item01: 1, item02: null }),
+    model("b", 4, { item01: 3, item02: 2 }),
+  ])!;
+  check("the mean uses only the model that rated it", c.perItem.item02.mean === 2, `got ${c.perItem.item02.mean}`);
+  check("one rating cannot diverge", !c.divergentItems.includes("item02"));
+}
+
+console.log("\nHandbook scoring rules:");
+{
+  const scores = Object.fromEntries(DISCERN_ITEMS.map((key) => [key, 5]));
+  scores.item01 = 1;
+  scores.item04 = 1;
+  scores.item05 = 5;
+  const justifications = Object.fromEntries(DISCERN_ITEMS.map((key) => [key, "x"]));
+  const out = normalizeDiscernOutput({
+    scores,
+    justifications,
+    resumo: "r",
+    observacoes: "o",
+    recommmendacoes: "c",
+    fonte: "f",
+    rawReportMarkdown: "m",
+  });
+  check("Question 2 is not rated when Question 1 is No", out.scores.item02 === null);
+  check("Question 5 is capped when Question 4 is No", out.scores.item04 === 1 && out.scores.item05 === 3, `item05=${out.scores.item05}`);
+  // items 1,3,4,5,6,7,8 = 1, 5, 1, 3, 5, 5, 5. Question 2 is excluded. 25/7 = 3.57
+  check("reliability excludes the unrated question", out.domainAverages.confiabilidade === 3.57, `got ${out.domainAverages.confiabilidade}`);
+  check("stamps the current instrument version", out.instrumentVersion === INSTRUMENT_VERSION);
 }
 
 console.log(

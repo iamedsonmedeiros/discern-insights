@@ -10,7 +10,7 @@ The application is built with a modern web stack, leveraging Next.js for the fro
 *   **Content Eligibility & Robust Scraping**:
     *   **Jina AI Integration**: Uses `r.jina.ai` to extract clean Markdown content from modern websites, including JS-heavy Single Page Applications.
     *   **Fallback Logic**: Automatically falls back to a native `fetch` (mimicking Google Bot) if the primary scraper fails.
-    *   Identifies and filters out non-eligible content like PDFs and videos.
+    *   Identifies and filters out non-eligible content (social media posts, video platforms, PDFs) and rejects blocked or error pages. See [URL Eligibility Rules](#url-eligibility-rules).
 *   **AI-Powered Summarization**: For articles with text content exceeding 30,000 characters, the tool uses an AI flow to summarize the content, ensuring the core information is retained for analysis.
 *   **DISCERN Analysis**:
     *   An AI flow evaluates the extracted text against the 16 items of the DISCERN instrument.
@@ -52,7 +52,22 @@ A aplicação utiliza rotas protegidas e baseadas em cargos:
 The application implements a systematic, AI-driven pipeline designed for the rigorous and reproducible evaluation of online health information.
 
 ### 1. Data Collection & Screening
-The system supports both individual and batch URL ingestion (via CSV/Text). Before evaluation, an automated screening process identifies and excludes technically incompatible formats—such as direct video files or standalone PDFs—ensuring the uniformity and integrity of the study sample.
+The system supports both individual and batch URL ingestion (via CSV/Text). Before evaluation, an automated screening process identifies and excludes formats outside the scope of the DISCERN instrument—social media posts, video platforms and standalone PDFs—ensuring the uniformity and integrity of the study sample.
+
+#### URL Eligibility Rules
+
+The rules live in `src/lib/eligibility.ts` (URL screening) and `src/lib/content.ts` (content checks). The same lists feed the eligibility footer on the dashboard, and every excluded URL carries its reason in the queue (hover the status badge) and in the CSV export.
+
+| Status | What it covers | Why it is excluded |
+|---|---|---|
+| `completed` (accepted) | Web pages with written text: articles, health portals, hospitals, medical societies, government agencies, blogs. Also LinkedIn Pulse articles (`linkedin.com/pulse/...`), the one social-network exception: they are long-form written publications, the format DISCERN assesses | — |
+| `not_eligible_social` | **Every URL** on Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn (except Pulse articles), Pinterest, Reddit, Kwai, Telegram and WhatsApp, whatever the post type (text, image, carousel, video). LinkedIn short links (`lnkd.in`) stay excluded because they hide the destination | DISCERN was validated for written publications about treatment choices. Posts are short, ephemeral, depend on surrounding context (media, comments, author profile) and often sit behind a login wall. |
+| `not_eligible_video` | YouTube, Vimeo, Dailymotion, Twitch, Rumble; also pages whose main content is an embedded video with little text | DISCERN assesses written text; the content is the video itself (no transcription is performed). |
+| `not_eligible_pdf` | URLs pointing directly to a PDF file | The study assesses web pages. |
+| `scraping_error` | Sites that refuse automated access (HTTP 401/403/429, bot-protection or "access denied" pages, `Target URL returned error 403` from the scraper), or fewer than 500 characters of extracted text | There is no assessable content. These can still be assessed with **Analyze Manually** by pasting the text. |
+| `unavailable_offline` | The page returned any other HTTP error (404, 500, …) | The page is not reachable. |
+
+Excluded and failed URLs are kept in the queue (systematic reviews must report them) but never enter averages, consensus or reliability statistics. To change the rules, edit the platform lists in `src/lib/eligibility.ts`; the footer updates automatically.
 
 ### 2. Content Extraction & Purification
 To ensure high-precision assessment by the AI model, the platform employs a specialized engine that isolates the primary text from web pages. This process removes irrelevant "noise"—including advertisements, navigation menus, and pop-ups—that could otherwise introduce bias or distract the AI. Robust architectural layers ensure that content is correctly retrieved even from modern, complex websites with technical bot protections.
@@ -62,9 +77,10 @@ For long-form health articles (exceeding 30,000 characters), the system performs
 
 ### 2. Analysis Engine (DISCERN Protocol)
 The core logic is an AI "Evaluator Agent" powered by **Google Gemini 2.5 Flash**, orchestrated by **Google Genkit**.
-*   **Systematic Evaluation**: Strictly applies the 16 validated criteria from the **DISCERN instrument** (University of Oxford).
+*   **Systematic Evaluation**: Strictly applies the 16 validated criteria from the **DISCERN instrument** (University of Oxford). Every model receives the official question wording, the instrument's rating hints and its scale (1 = No, 2-4 = Partially, 5 = Yes; item 16 from Low to High quality), plus its skip rule (when item 1 is "No", item 2 is rated 1). The items live in a single source, `src/lib/discern-items.ts`, which the prompt, the schema, the interface, the exports and the article all read.
 *   **Evidence-Based Justification**: For every score (1-5), the model generates a text-based justification citing observations from the source text.
-*   **Domain Aggregation**: Results are categorized into *Reliability* (items 1-8), *Quality of Treatment Options* (items 9-15), and *Overall Quality* (item 16).
+*   **Domain Aggregation**: Results are categorized into *Reliability* (items 1-8), *Quality of Treatment Options* (items 9-15), and *Overall Quality* (item 16). The averages are computed by the code from the item scores, never by the model.
+*   **Instrument Version**: Each result records `instrumentVersion` (currently `discern-official-v2`), and the analysis cache is keyed by it. The questions, hints and scale follow the DISCERN Handbook (1997). Question 4's hint also accepts external links, as in the online instrument, because the pages evaluated are websites. The Portuguese labels are the validated translation (Logullo et al., 2019). When question 1 is rated No, question 2 is left unrated and left out of the mean. A page rated 1 on question 4 cannot score 4 or 5 on question 5. Analyses without the current version used an earlier, non-official item set (item 10, "benefits", was missing and the question on treatment choices was repeated). They stay visible with a warning, but are excluded from statistics, reliability (ICC) and the article. Reprocess those URLs to include them.
 
 ### 3. Asynchronous Processing & Scalability
 To support large-scale systematic reviews (e.g., automated analysis of 150+ URLs), the system employs a robust server-side architecture:

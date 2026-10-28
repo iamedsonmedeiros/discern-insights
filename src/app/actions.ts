@@ -1,6 +1,7 @@
 "use server";
 
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
+import type { ArticleItem } from "@/lib/article-data";
 import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
 import { extractContent, runPanel, runDiscernAnalysis } from "@/lib/content";
@@ -385,7 +386,7 @@ export async function processUrl(
   const consensus = computeConsensus(
     succeeded.map((run) => ({
       modelId: run.evaluatorId,
-      scores: run.discernResult!.scores as unknown as Record<string, number>,
+      scores: run.discernResult!.scores as unknown as Record<string, number | null>,
     }))
   );
 
@@ -424,7 +425,7 @@ export async function analyzeTextDirectly(
 }
 
 
-export async function generateArticleAction({ items }: { items: AnalysisItem[] }) {
+export async function generateArticleAction({ items }: { items: ArticleItem[] }) {
   // Ensure user is authenticated
   await getAuthenticatedUser();
 

@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase-server";
+import { isCurrentInstrument } from "@/lib/discern-items";
 
 export type StatsData = {
     total_analyses: number;
@@ -58,7 +59,8 @@ export async function fetchStats(
         return null;
     }
 
-    const completedItems = data.filter(item => item.status === 'completed' && item.discern_result);
+    // Scores from an older item set answer different questions and are not averaged in.
+    const completedItems = data.filter(item => item.status === 'completed' && isCurrentInstrument(item.discern_result));
     const errorItems = data.filter(item => ['analysis_error', 'scraping_error', 'unavailable_offline'].includes(item.status));
 
     // Calculate Average Score and Total Cost

@@ -21,14 +21,15 @@ export const DIVERGENCE_THRESHOLD = 1;
 export const MIN_MODELS_FOR_CONSENSUS = 2;
 
 export type ItemStat = {
-  mean: number;
-  min: number;
-  max: number;
+  /** Null when every model left the item unrated (Question 2 when Question 1 is No). */
+  mean: number | null;
+  min: number | null;
+  max: number | null;
   range: number;
-  /** Population standard deviation across the models. */
+  /** Population standard deviation across the models that rated the item. */
   sd: number;
-  /** Each model's raw score, so the UI can show who said what. */
-  values: Record<string, number>;
+  /** Each model's raw score, or null when that model left the item unrated. */
+  values: Record<string, number | null>;
 };
 
 export type Consensus = {
@@ -47,7 +48,7 @@ export type Consensus = {
 
 export type ModelScores = {
   modelId: string;
-  scores: Record<string, number>;
+  scores: Record<string, number | null>;
 };
 
 function round(n: number, places = 2): number {
@@ -65,9 +66,14 @@ function mean(values: number[]): number {
  * not a consensus, and pretending otherwise would hide the fact that the panel
  * was incomplete.
  */
+const isAnswered = (value: number | null | undefined): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
 export function computeConsensus(results: ModelScores[]): Consensus | null {
+  // A null score is an explicit "not rated" (Question 2). A missing key is a
+  // broken result and drops that model from the consensus.
   const usable = results.filter(
-    (r) => r.scores && DISCERN_ITEMS.every((item) => typeof r.scores[item] === "number")
+    (r) => r.scores && DISCERN_ITEMS.every((item) => r.scores[item] === null || isAnswered(r.scores[item]))
   );
 
   if (usable.length < MIN_MODELS_FOR_CONSENSUS) return null;
@@ -76,16 +82,21 @@ export function computeConsensus(results: ModelScores[]): Consensus | null {
   const divergentItems: string[] = [];
 
   for (const item of DISCERN_ITEMS) {
-    const values: Record<string, number> = {};
+    const values: Record<string, number | null> = {};
     for (const result of usable) {
       values[result.modelId] = result.scores[item];
     }
 
-    const nums = Object.values(values);
+    const nums = Object.values(values).filter(isAnswered);
+    if (nums.length === 0) {
+      perItem[item] = { mean: null, min: null, max: null, range: 0, sd: 0, values };
+      continue;
+    }
+
     const avg = mean(nums);
     const min = Math.min(...nums);
     const max = Math.max(...nums);
-    const range = max - min;
+    const range = nums.length >= 2 ? max - min : 0;
     const variance = mean(nums.map((v) => (v - avg) ** 2));
 
     perItem[item] = {
@@ -102,8 +113,11 @@ export function computeConsensus(results: ModelScores[]): Consensus | null {
 
   // Domain averages are computed from the CONSENSUS means, not by averaging each
   // model's own domain averages — otherwise a model that failed on one item
-  // would skew a whole domain.
-  const meanOf = (items: readonly string[]) => round(mean(items.map((i) => perItem[i].mean)));
+  // would skew a whole domain. An item nobody rated is left out of its domain.
+  const meanOf = (items: readonly string[]) => {
+    const nums = items.map((i) => perItem[i].mean).filter(isAnswered);
+    return nums.length ? round(mean(nums)) : 0;
+  };
 
   return {
     models: usable.map((r) => r.modelId),
@@ -111,7 +125,7 @@ export function computeConsensus(results: ModelScores[]): Consensus | null {
     domainAverages: {
       confiabilidade: meanOf(DISCERN_ITEMS.slice(0, 8)), // items 1-8
       qualidade_tratamento: meanOf(DISCERN_ITEMS.slice(8, 15)), // items 9-15
-      score_geral: perItem.item16.mean, // item 16
+      score_geral: perItem.item16.mean ?? 0, // item 16; 0 only if nobody rated it
     },
     divergentItems,
     divergenceFlag: divergentItems.length > 0,

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { DiscernAnalyzerPage } from "@/components/pages/discern-analyzer-page";
 import { StatsDashboard } from "@/components/app/stats-dashboard";
 import { HistoryDashboard } from "@/components/app/history-dashboard";
+import { EligibilityFooter } from "@/components/app/eligibility-footer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LayoutDashboard, Microscope, Clock } from "lucide-react";
 
@@ -54,6 +55,7 @@ export function DashboardClient({ isAdmin }: DashboardClientProps) {
           <StatsDashboard isAdmin={isAdmin} />
         </TabsContent>
       </Tabs>
+      <EligibilityFooter />
     </div>
   );
 }

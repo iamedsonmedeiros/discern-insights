@@ -162,7 +162,7 @@ export function ConsensusView({
                         </td>
                       );
                     })}
-                    <td className="p-2 text-center font-semibold">{stat.mean.toFixed(2)}</td>
+                    <td className="p-2 text-center font-semibold">{stat.mean == null ? "—" : stat.mean.toFixed(2)}</td>
                     <td className="p-2 text-center">
                       <Badge
                         variant={diverges ? "destructive" : "outline"}

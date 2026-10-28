@@ -5,120 +5,154 @@
 // Every model in the panel MUST receive this exact prompt and be constrained by
 // this exact schema — that is what makes the multi-model comparison "blind" and
 // the scores comparable. Nothing provider-specific belongs in this file.
+//
+// The questions, hints and rating scale come from `@/lib/discern-items`; this
+// file only shapes them into a schema and a prompt.
 
 import { z } from "zod";
+import {
+  DISCERN_INSTRUMENT,
+  DISCERN_TERMS,
+  INSTRUMENT_VERSION,
+  RATING_SCALE,
+  SECTION_TITLES,
+  type DiscernSection,
+} from "@/lib/discern-items";
 
-export const discernScoresSchema = z.object({
-  item01: z.number().min(1).max(5).describe('Are the aims clear?'),
-  item02: z.number().min(1).max(5).describe('Does it achieve its aims?'),
-  item03: z.number().min(1).max(5).describe('Is it relevant?'),
-  item04: z.number().min(1).max(5).describe('Is it clear what sources of information were used to compile the publication (other than the author or producer)?'),
-  item05: z.number().min(1).max(5).describe('Is it clear when the information used or reported in the publication was produced?'),
-  item06: z.number().min(1).max(5).describe('Is it balanced and unbiased?'),
-  item07: z.number().min(1).max(5).describe('Does it provide details of additional sources of support and information?'),
-  item08: z.number().min(1).max(5).describe('Does it refer to areas of uncertainty?'),
-  item09: z.number().min(1).max(5).describe('Does it describe how each treatment works?'),
-  item10: z.number().min(1).max(5).describe('Does it describe the risks of each treatment?'),
-  item11: z.number().min(1).max(5).describe('Does it describe what would happen without treatment?'),
-  item12: z.number().min(1).max(5).describe('Does it describe how the treatments affect overall quality of life?'),
-  item13: z.number().min(1).max(5).describe('Is it clear that there may be a choice of treatments?'),
-  item14: z.number().min(1).max(5).describe('Does it provide support for shared decision-making?'),
-  item15: z.number().min(1).max(5).describe('Is it clear that there may be a choice of treatments? (This seems to be a duplicate of 13, but is in the DISCERN list)'),
-  item16: z.number().min(1).max(5).describe('Overall quality rating'),
-});
+const ITEM_KEYS = DISCERN_INSTRUMENT.map((item) => item.key);
 
-export const discernJustificationsSchema = z.object({
-  item01: z.string().describe('Justification for score on: Are the aims clear?'),
-  item02: z.string().describe('Justification for score on: Does it achieve its aims?'),
-  item03: z.string().describe('Justification for score on: Is it relevant?'),
-  item04: z.string().describe('Justification for score on: Is it clear what sources of information were used?'),
-  item05: z.string().describe('Justification for score on: Is it clear when the information used was produced?'),
-  item06: z.string().describe('Justification for score on: Is it balanced and unbiased?'),
-  item07: z.string().describe('Justification for score on: Does it provide details of additional sources?'),
-  item08: z.string().describe('Justification for score on: Does it refer to areas of uncertainty?'),
-  item09: z.string().describe('Justification for score on: Does it describe how each treatment works?'),
-  item10: z.string().describe('Justification for score on: Does it describe the risks of each treatment?'),
-  item11: z.string().describe('Justification for score on: Does it describe what would happen without treatment?'),
-  item12: z.string().describe('Justification for score on: Does it describe how the treatments affect overall quality of life?'),
-  item13: z.string().describe('Justification for score on: Is it clear that there may be a choice of treatments?'),
-  item14: z.string().describe('Justification for score on: Does it provide support for shared decision-making?'),
-  item15: z.string().describe('Justification for score on: Is it clear that there may be a choice of treatments? (This seems to be a duplicate of 13, but is in the DISCERN list)'),
-  item16: z.string().describe('Justification for score on: Overall quality rating'),
-});
+const questionOf = (item: (typeof DISCERN_INSTRUMENT)[number]) => `Q${item.number}. ${item.question.en}`;
+
+// Question 2 is left unanswered when Question 1 is No (Handbook, Part 3).
+const scoreField = (item: (typeof DISCERN_INSTRUMENT)[number], relaxed: boolean) => {
+  const number = (relaxed ? z.number() : z.number().min(1).max(5)).describe(questionOf(item));
+  return item.key === "item02" ? number.nullable() : number;
+};
+
+export const discernScoresSchema = z.object(
+  Object.fromEntries(DISCERN_INSTRUMENT.map((item) => [item.key, scoreField(item, false)])) as Record<
+    string,
+    z.ZodType<number | null>
+  >
+);
+
+export const discernJustificationsSchema = z.object(
+  Object.fromEntries(
+    DISCERN_INSTRUMENT.map((item) => [
+      item.key,
+      z.string().describe(`Justification for the score on ${questionOf(item)}`),
+    ])
+  ) as Record<string, z.ZodString>
+);
+
+const domainAveragesSchema = z
+  .object({
+    confiabilidade: z.number().describe("Mean of questions 1-8 (reliability)."),
+    qualidade_tratamento: z.number().describe("Mean of questions 9-15 (quality of information on treatment choices)."),
+    score_geral: z.number().describe("Question 16 (overall rating)."),
+  })
+  .describe("Average scores for the DISCERN domains.");
 
 /**
- * What the model is asked to produce. Deliberately excludes `usage` — token
- * counts are API response metadata, not something the model should hallucinate.
+ * A complete DISCERN evaluation as stored. `domainAverages` and
+ * `instrumentVersion` are filled in by `normalizeDiscernOutput`, never by the model.
  */
 export const DiscernOutputSchema = z.object({
-  scores: discernScoresSchema.describe('Scores for each of the 16 DISCERN items.'),
-  justifications: discernJustificationsSchema.describe('Justifications for each score assigned to the DISCERN items.'),
-  domainAverages: z
-    .object({
-      confiabilidade: z.number().describe('Average score for the reliability domain (items 1-8).'),
-      qualidade_tratamento: z
-        .number()
-        .describe('Average score for the treatment quality domain (items 9-15).'),
-      score_geral: z.number().describe('Overall DISCERN score (item 16).'),
-    })
-    .describe('Average scores for the DISCERN domains.'),
-  resumo: z.string().describe('Executive summary of the DISCERN analysis.'),
-  observacoes: z.string().describe('Observations regarding authorship, sources, and conflicts.'),
-  recommmendacoes: z.string().describe('Recommendations for improving the information.'),
-  fonte: z.string().describe('Source of the DISCERN analysis.'),
-  rawReportMarkdown: z.string().describe('Complete DISCERN report in Markdown format.'),
+  scores: discernScoresSchema.describe("Scores for each of the 16 DISCERN questions."),
+  justifications: discernJustificationsSchema.describe("Justification for each score, citing the text."),
+  domainAverages: domainAveragesSchema,
+  resumo: z.string().describe("Executive summary of the DISCERN analysis."),
+  observacoes: z.string().describe("Observations regarding authorship, sources, and conflicts."),
+  recommmendacoes: z.string().describe("Recommendations for improving the information."),
+  fonte: z.string().describe("Source of the DISCERN analysis."),
+  rawReportMarkdown: z.string().describe("Complete DISCERN report in Markdown format."),
+  instrumentVersion: z.string().optional(),
 });
 
 export type DiscernOutput = z.infer<typeof DiscernOutputSchema>;
 
-const ITEM_KEYS = Array.from(
-  { length: 16 },
-  (_, i) => `item${String(i + 1).padStart(2, "0")}`
-);
-
 /**
  * A version of the score schema WITHOUT numeric min/max constraints. Some
  * providers (Anthropic via OpenRouter) reject `minimum`/`maximum` on number
- * types in structured-output JSON schema. The 1–5 range is instead stated in
- * each field description and re-imposed after the fact by `normalizeDiscernOutput`.
+ * types in structured-output JSON schema. The 1–5 range is stated in the prompt
+ * and re-imposed after the fact by `normalizeDiscernOutput`.
  */
 const relaxedScoresSchema = z.object(
   Object.fromEntries(
-    ITEM_KEYS.map((key) => [
-      key,
-      z.number().describe(
-        (discernScoresSchema.shape as Record<string, z.ZodNumber>)[key].description ??
-          "DISCERN score from 1 to 5."
+    DISCERN_INSTRUMENT.map((item) => [
+      item.key,
+      scoreField(item, true).describe(
+        item.key === "item02"
+          ? `${questionOf(item)} Score from 1 to 5, or null when Question 1 is No.`
+          : `${questionOf(item)} Score from 1 to 5.`
       ),
     ])
-  ) as Record<string, z.ZodNumber>
+  ) as Record<string, z.ZodType<number | null>>
 );
 
 /**
- * The output schema used for the actual model request. Identical to
- * `DiscernOutputSchema` except the scores carry no numeric constraints, so every
- * provider accepts it. Responses are validated/clamped back to the strict schema.
+ * What the model is asked to produce. Domain averages are arithmetic, so the code
+ * computes them; the version is metadata. Neither is left to the model.
  */
-export const DiscernRequestSchema = DiscernOutputSchema.extend({
+export const DiscernRequestSchema = DiscernOutputSchema.omit({
+  domainAverages: true,
+  instrumentVersion: true,
+}).extend({
   scores: relaxedScoresSchema,
 });
 
+const mean = (values: number[]) =>
+  values.length === 0 ? 0 : Math.round((values.reduce((sum, v) => sum + v, 0) / values.length) * 100) / 100;
+
 /**
  * Coerces a raw model response into a valid DiscernOutput: rounds each score and
- * clamps it into [1, 5], then validates against the strict schema. This is the
- * safety net for models that ignore the range, over- or under-shoot, or emit a
- * float where an integer was expected.
+ * clamps it into [1, 5], applies the handbook's two scoring rules (Question 2 is
+ * not answered when Question 1 is No; Question 5 cannot rate high when Question 4
+ * is No), computes the domain averages from the answered scores, stamps the
+ * instrument version, then validates against the strict schema.
  */
-export function normalizeDiscernOutput(
-  raw: z.infer<typeof DiscernRequestSchema>
-): DiscernOutput {
-  const scores = raw.scores as unknown as Record<string, number>;
-  const clamped: Record<string, number> = {};
+export function normalizeDiscernOutput(raw: z.infer<typeof DiscernRequestSchema>): DiscernOutput {
+  const scores = raw.scores as unknown as Record<string, number | null>;
+  const clamped: Record<string, number | null> = {};
   for (const key of ITEM_KEYS) {
-    const value = Number(scores[key]);
-    clamped[key] = Number.isFinite(value) ? Math.min(5, Math.max(1, Math.round(value))) : 1;
+    const value = scores[key];
+    if (value === null || value === undefined) {
+      clamped[key] = null;
+      continue;
+    }
+    const numeric = Number(value);
+    clamped[key] = Number.isFinite(numeric) ? Math.min(5, Math.max(1, Math.round(numeric))) : null;
   }
-  return DiscernOutputSchema.parse({ ...raw, scores: clamped });
+
+  // Every question except 2 must be rated. A missing score is treated as 1.
+  for (const key of ITEM_KEYS) {
+    if (key !== "item02" && clamped[key] === null) clamped[key] = 1;
+  }
+
+  // Handbook, Part 3: when the aims are not stated, Question 2 is irrelevant.
+  if (clamped.item01 === 1) clamped.item02 = null;
+  else if (clamped.item02 === null) clamped.item02 = 1;
+
+  // Handbook, Part 3: a publication rated 1 on Question 4 cannot rate high on Question 5.
+  if (clamped.item04 === 1 && typeof clamped.item05 === "number" && clamped.item05 >= 4) {
+    clamped.item05 = 3;
+  }
+
+  const answered = (section: DiscernSection) =>
+    DISCERN_INSTRUMENT.filter((item) => item.section === section)
+      .map((item) => clamped[item.key])
+      .filter((value): value is number => typeof value === "number");
+
+  return DiscernOutputSchema.parse({
+    ...raw,
+    scores: clamped,
+    domainAverages: {
+      confiabilidade: mean(answered("reliability")),
+      qualidade_tratamento: mean(answered("treatment")),
+      score_geral: clamped.item16 as number,
+    },
+    instrumentVersion: INSTRUMENT_VERSION,
+  });
 }
 
 export type TokenUsage = {
@@ -126,21 +160,48 @@ export type TokenUsage = {
   outputTokens: number;
 };
 
+function instrumentText(): string {
+  const sections: DiscernSection[] = ["reliability", "treatment", "overall"];
+  return sections
+    .map((section) => {
+      const questions = DISCERN_INSTRUMENT.filter((item) => item.section === section)
+        .map((item) => `${questionOf(item)}\n   Hint: ${item.hint}`)
+        .join("\n");
+      return `${SECTION_TITLES[section]}\n${questions}`;
+    })
+    .join("\n\n");
+}
+
 /**
  * The single prompt every evaluator in the panel receives. Kept byte-identical
  * across providers on purpose — any divergence here invalidates the comparison.
  */
 export function buildDiscernPrompt(input: { text: string; language: string }): string {
-  return `You are a rigorous DISCERN (University of Oxford) evaluator for the quality of health information.
-	• Use a 1–5 scale per item.
-	• Items 1–8: reliability.
-	• Items 9–15: quality of treatment options.
-	• Item 16: overall quality.
-	• Evaluate only text content.
-	• If the text does not discuss treatment options, explain this and assign low scores to the corresponding items.
-	• Always respond in the language specified: ${input.language}.
+  return `You are a rigorous evaluator applying the DISCERN instrument (Charnock et al., 1999; University of Oxford) to a written publication about health and treatment choices. Apply the instrument exactly as specified below. The hints guide the rating; they are not hard and fast rules, and judgement still applies.
 
-  Analyze the following text:
-  ${input.text}
+TERMS
+${DISCERN_TERMS}
+
+RATING SCALE
+${RATING_SCALE}
+Question 16 uses its own anchors, given in its hint.
+
+RULES
+- Rate every question from 1 to 5, using the hints and the rating notes. Base every rating only on the text provided; do not assume content that is not there.
+- If Question 1 is rated 1 (No), Question 2 is irrelevant and must not be answered: set item02 to null and write in its justification that it was not rated because the aims are not clear. If Question 1 is partial (2 to 4), judge what expectations the aims raised and rate Question 2 against those.
+- Section 2 rates the treatment or treatments described in the publication. Apart from Question 14, it is not about every treatment that exists. Questions 9 to 11 concern the active treatments, including self-care. No-treatment options are rated in Question 12.
+- Question 4: a 5 requires both hints (a reference beside the claim, and a way to check that source). Fulfilment of only one hint is a partial rating. Further reading and useful addresses belong to Question 7 and are not sources of evidence here. A high rating does not mean the information is accurate.
+- Question 5: a 5 requires the dates of the main sources of evidence, which is the first hint. Only the date of the publication itself is a partial rating. A publication rated 1 on Question 4 cannot be rated 4 or 5 on Question 5.
+- Question 16 is an intuitive summary of the answers to questions 1 to 15. Rate it 5 when the publication rated 4 or above on the majority of questions, 3 when the high and low ratings are similar in number or most ratings are in the middle, and 1 when it rated 2 or below on the majority.
+- If the publication does not discuss treatment choices, rate the Section 2 questions 1 where the criterion is not met at all and explain why. Do not leave a question null to avoid a criterion that is simply unmet.
+- Each justification must cite or paraphrase the specific passages of the text that support the rating.
+- Keys item01 to item16 in the output correspond to questions 1 to 16, in order.
+- Write all free text (justifications, summary, observations, recommendations, report) in this language: ${input.language}.
+
+THE DISCERN INSTRUMENT
+${instrumentText()}
+
+TEXT TO EVALUATE
+${input.text}
 `;
 }

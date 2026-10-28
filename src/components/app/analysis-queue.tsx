@@ -6,7 +6,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { getReportedScores } from "@/lib/reported-scores";
 import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
 import { useI18n } from "@/components/i18n/use-i18n";
 import type { TranslationKey } from "../i18n/translations";
@@ -21,20 +23,65 @@ const statusConfig: Record<
   completed: { textKey: "status.completed", icon: <CheckCircle2 className="h-4 w-4 text-green-500" />, badgeVariant: "secondary" },
   not_eligible_pdf: { textKey: "status.not_eligible_pdf", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
   not_eligible_video: { textKey: "status.not_eligible_video", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
+  not_eligible_social: { textKey: "status.not_eligible_social", icon: <XCircle className="h-4 w-4 text-yellow-500" />, badgeVariant: "outline" },
   unavailable_offline: { textKey: "status.unavailable_offline", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
   scraping_error: { textKey: "status.scraping_error", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
   analysis_error: { textKey: "status.analysis_error", icon: <AlertCircle className="h-4 w-4 text-red-500" />, badgeVariant: "destructive" },
 };
 
-const ScoreBadge = ({ score }: { score: number | undefined }) => {
-  if (score === undefined) return <span className="text-muted-foreground">-</span>;
+const ScoreBadge = ({ item, t }: { item: AnalysisItem; t: ReturnType<typeof useI18n>["t"] }) => {
+  const reported = getReportedScores(item);
+  if (!reported) return <span className="text-muted-foreground">-</span>;
 
+  const score = reported.domainAverages.score_geral;
   let colorClass = "bg-gray-400";
   if (score >= 4) colorClass = "bg-green-500";
   else if (score >= 2.5) colorClass = "bg-yellow-500";
   else if (score > 0) colorClass = "bg-red-500";
 
-  return <Badge className={cn("text-white", colorClass)}>{score.toFixed(1)}</Badge>;
+  const label =
+    reported.source === "consensus"
+      ? t("queue.score.consensus", { count: reported.models.length })
+      : t("queue.score.single");
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-help">
+            <Badge className={cn("text-white", colorClass)}>{score.toFixed(1)}</Badge>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="left">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+};
+
+/** Excluded or failed items explain themselves on hover; the reason comes from the extraction stage. */
+const StatusBadge = ({ item, label }: { item: AnalysisItem; label: string }) => {
+  const config = statusConfig[item.status];
+  const badge = (
+    <Badge variant={config.badgeVariant} className="flex items-center gap-2 w-fit">
+      {config.icon}
+      <span>{label}</span>
+    </Badge>
+  );
+
+  if (item.status === "completed" || !item.reason) return badge;
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-help">{badge}</span>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs whitespace-normal">
+          {item.reason}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 };
 
 interface AnalysisQueueProps {
@@ -84,13 +131,10 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
                     <TableCell>{item.index}</TableCell>
                     <TableCell className="max-w-[250px] truncate">{item.url}</TableCell>
                     <TableCell>
-                      <Badge variant={statusConfig[item.status].badgeVariant} className="flex items-center gap-2">
-                        {statusConfig[item.status].icon}
-                        <span>{t(statusConfig[item.status].textKey)}</span>
-                      </Badge>
+                      <StatusBadge item={item} label={t(statusConfig[item.status].textKey)} />
                     </TableCell>
                     <TableCell className="text-right">
-                      <ScoreBadge score={item.discernResult?.domainAverages.score_geral} />
+                      <ScoreBadge item={item} t={t} />
                     </TableCell>
                   </TableRow>
                 ))

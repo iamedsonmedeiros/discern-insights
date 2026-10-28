@@ -4,8 +4,9 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels } from "@/app/actions";
+import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
+import { toArticleItem } from "@/lib/article-data";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
 import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
@@ -543,7 +544,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     setIsGeneratingArticle(true);
     toast({ title: t('article.generatingTitle'), description: t('article.generatingDescription') });
     try {
-      const result = await generateArticleAction({ items: completedItems });
+      // Excluded items go too: the article opens with the sample flow.
+      const result = await generateArticleAction({ items: processedItems.map(toArticleItem) });
       if (result.articleContent) {
         saveDocxFromContent(result.articleContent, 'coloproctology_article');
         toast({ title: t('article.generatedTitle'), description: t('article.generatedDescription') });
@@ -748,7 +750,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
               <CardContent className="space-y-2">
                 <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
                 <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.json')}</Button>
-                <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>
+                <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results', fetchModelResults)} disabled={processedItems.length === 0}>
                   <FileText className="mr-2 h-4 w-4" />
                   {t('export.docx')}
                 </Button>

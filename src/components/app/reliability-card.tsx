@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/i18n/use-i18n";
 import { computeIcc, buildIccMatrix, interpretIcc } from "@/lib/reliability";
+import { isCurrentInstrument } from "@/lib/discern-items";
 import type { AnalysisItem, Consensus } from "@/lib/types";
 
 const BAND_STYLES: Record<string, string> = {
@@ -29,6 +30,7 @@ export function ReliabilityCard({ items }: { items: AnalysisItem[] }) {
 
   const icc = useMemo(() => {
     const analyses = items
+      .filter((i) => isCurrentInstrument(i.discernResult))
       .map((i) => i.consensus as Consensus | undefined)
       .filter((c): c is Consensus => !!c);
 

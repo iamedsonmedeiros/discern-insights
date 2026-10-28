@@ -11,6 +11,7 @@ export type AnalysisStatus =
   | "completed"
   | "not_eligible_pdf"
   | "not_eligible_video"
+  | "not_eligible_social"
   | "unavailable_offline"
   | "scraping_error"
   | "analysis_error";

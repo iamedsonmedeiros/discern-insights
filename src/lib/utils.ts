@@ -2,6 +2,9 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { type AnalysisItem, type AnalysisStatus } from "./types";
+import { getReportedScores, shortModelName } from "./reported-scores";
+import { discernLabel, isCurrentInstrument } from "./discern-items";
+import type { ModelResultRow } from "@/app/actions";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -74,13 +77,16 @@ function escapeCsvField(field: any): string {
     return stringField;
 }
 
+const instrumentVersionOf = (item: AnalysisItem) =>
+    item.discernResult ? item.discernResult.instrumentVersion ?? 'legacy' : '';
+
 export function exportCsv(data: AnalysisItem[], filename: string) {
     if (data.length === 0) return;
 
     const discernItemHeaders = Array.from({ length: 16 }, (_, i) => `item${String(i + 1).padStart(2, '0')}_score`);
 
     const headers = [
-        'index', 'url', 'status', 'reason', 'title',
+        'index', 'url', 'status', 'reason', 'title', 'instrument_version',
         'score_geral', 'confiabilidade_avg', 'qualidade_tratamento_avg',
         ...discernItemHeaders,
         'resumo_executivo', 'observacoes', 'recomendacoes'
@@ -89,7 +95,8 @@ export function exportCsv(data: AnalysisItem[], filename: string) {
     const rows = data.map(item => {
         const discernScores = discernItemHeaders.map(header => {
             const key = header.replace('_score', '') as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
-            return escapeCsvField(item.discernResult?.scores?.[key]);
+            const value = item.discernResult?.scores?.[key];
+            return escapeCsvField(value === null ? "NA" : value);
         });
 
         return [
@@ -98,6 +105,7 @@ export function exportCsv(data: AnalysisItem[], filename: string) {
             escapeCsvField(item.status),
             escapeCsvField(item.reason),
             escapeCsvField(item.meta?.title),
+            escapeCsvField(instrumentVersionOf(item)),
             escapeCsvField(item.discernResult?.domainAverages.score_geral),
             escapeCsvField(item.discernResult?.domainAverages.confiabilidade),
             escapeCsvField(item.discernResult?.domainAverages.qualidade_tratamento),
@@ -135,7 +143,8 @@ export function exportScoreSheetCsv(data: AnalysisItem[], filename: string) {
     const rows = data.map(item => {
         const scores = Array.from({ length: 16 }, (_, i) => {
             const key = `item${String(i + 1).padStart(2, '0')}` as keyof NonNullable<AnalysisItem['discernResult']>['scores'];
-            return item.discernResult?.scores?.[key] || '';
+            const value = item.discernResult?.scores?.[key];
+            return value === null ? "NA" : value || '';
         });
 
         return [
@@ -176,7 +185,7 @@ export function exportConsensusCsv(data: AnalysisItem[], filename: string) {
     ).sort();
 
     const headers = [
-        'url', 'title', 'item', 'question',
+        'url', 'title', 'instrument_version', 'item', 'question',
         'consensus_mean', 'sd', 'min', 'max', 'range', 'diverged',
         ...models.map(m => `score_${m}`),
     ];
@@ -193,8 +202,9 @@ export function exportConsensusCsv(data: AnalysisItem[], filename: string) {
             rows.push([
                 escapeCsvField(item.url),
                 escapeCsvField(item.meta?.title),
+                escapeCsvField(instrumentVersionOf(item)),
                 escapeCsvField(key),
-                escapeCsvField(discernQuestions[key] ?? key),
+                escapeCsvField(discernLabel(key)),
                 escapeCsvField(stat.mean),
                 escapeCsvField(stat.sd),
                 escapeCsvField(stat.min),
@@ -218,25 +228,6 @@ export function exportConsensusCsv(data: AnalysisItem[], filename: string) {
     document.body.removeChild(link);
 }
 
-const discernQuestions: Record<string, string> = {
-    'item01': '1. Os objetivos são claros?',
-    'item02': '2. A publicação atinge seus objetivos?',
-    'item03': '3. É relevante?',
-    'item04': '4. Cita explicitamente as fontes de evidência?',
-    'item05': '5. A data das fontes é clara?',
-    'item06': '6. É equilibrada e imparcial?',
-    'item07': '7. Aponta áreas de incerteza?',
-    'item08': '8. Descreve como o tratamento funciona?',
-    'item09': '9. Descreve os riscos do tratamento?',
-    'item10': '10. Descreve os efeitos colaterais?',
-    'item11': '11. Descreve o que aconteceria sem tratamento?',
-    'item12': '12. Discute como o tratamento afeta a qualidade de vida?',
-    'item13': '13. Deixa claro que existem outras opções?',
-    'item14': '14. Oferece suporte para decisão compartilhada?',
-    'item15': '15. Há mais de uma opção de tratamento?',
-    'item16': '16. Avaliação geral da qualidade'
-};
-
 
 const statusTranslations: Record<AnalysisStatus, string> = {
     pending: 'Pendente',
@@ -244,14 +235,31 @@ const statusTranslations: Record<AnalysisStatus, string> = {
     completed: 'Concluído',
     not_eligible_pdf: 'Não Elegível (PDF)',
     not_eligible_video: 'Não Elegível (Vídeo)',
+    not_eligible_social: 'Não Elegível (Rede Social)',
     unavailable_offline: 'Offline / Indisponível',
     scraping_error: 'Erro de Extração',
     analysis_error: 'Erro de Análise',
 };
 
 
-export async function exportDocx(data: AnalysisItem[], filename: string) {
+/**
+ * `loadModelResults` supplies each model's own justifications for items where the
+ * panel diverged; they aren't stored on the item. Without it, only the narrative
+ * model's justification is exported.
+ */
+export async function exportDocx(
+    data: AnalysisItem[],
+    filename: string,
+    loadModelResults?: (itemId: string) => Promise<ModelResultRow[]>
+) {
     if (data.length === 0) return;
+
+    const modelResults = new Map<string, ModelResultRow[]>();
+    if (loadModelResults) {
+        const divergent = data.filter(item => item.status === 'completed' && item.divergenceFlag);
+        const loaded = await Promise.all(divergent.map(item => loadModelResults(item.id).catch(() => [])));
+        divergent.forEach((item, i) => modelResults.set(item.id, loaded[i]));
+    }
 
     const doc = new Document({
         sections: [{
@@ -267,32 +275,78 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                     }),
                 ];
 
-                if (item.discernResult) {
+                const reported = getReportedScores(item);
+
+                if (item.discernResult && reported) {
+                    const consensus = item.consensus;
+                    const narrativeModel = reported.narrativeModel ? shortModelName(reported.narrativeModel) : null;
+
                     children.push(
                         new Paragraph({ text: `Análise concluída em: ${new Date(item.updatedAt).toLocaleString()}`, style: 'Emphasis' }),
+                        ...(isCurrentInstrument(item.discernResult) ? [] : [new Paragraph({
+                            children: [new TextRun({
+                                text: 'Atenção: análise feita com a versão anterior das perguntas, que não correspondia ao DISCERN oficial (sem o item 10, "benefícios", e com a pergunta sobre opções repetida). As notas abaixo não são comparáveis com as análises atuais. Reprocesse a URL para obter uma avaliação fiel ao instrumento.',
+                                bold: true,
+                                color: "B45309",
+                            })]
+                        })]),
                         new Paragraph({ text: " " }),
 
                         new Paragraph({ text: "Métricas Principais", heading: HeadingLevel.HEADING_2 }),
+                    );
+
+                    if (consensus) {
+                        children.push(new Paragraph({
+                            children: [new TextRun({
+                                text: `Médias do painel de ${consensus.models.length} modelos (${consensus.models.map(shortModelName).join(", ")}).`,
+                                italics: true,
+                            })]
+                        }));
+                        if (item.panelIncomplete) {
+                            children.push(new Paragraph({
+                                children: [new TextRun({
+                                    text: `Painel incompleto: ${consensus.models.length} de ${item.modelsTotal ?? "?"} modelos concluíram a avaliação.`,
+                                    italics: true,
+                                    color: "B45309",
+                                })]
+                            }));
+                        }
+                    }
+
+                    children.push(
                         new Paragraph({
                             children: [
                                 new TextRun({ text: "Confiabilidade: ", bold: true }),
-                                new TextRun(item.discernResult.domainAverages.confiabilidade.toFixed(2)),
+                                new TextRun(reported.domainAverages.confiabilidade.toFixed(2)),
                             ]
                         }),
                         new Paragraph({
                             children: [
                                 new TextRun({ text: "Qualidade do Tratamento: ", bold: true }),
-                                new TextRun(item.discernResult.domainAverages.qualidade_tratamento.toFixed(2)),
+                                new TextRun(reported.domainAverages.qualidade_tratamento.toFixed(2)),
                             ]
                         }),
                         new Paragraph({
                             children: [
                                 new TextRun({ text: "Score Geral: ", bold: true }),
-                                new TextRun(item.discernResult.domainAverages.score_geral.toFixed(2)),
+                                new TextRun(reported.domainAverages.score_geral.toFixed(2)),
                             ]
                         }),
                         new Paragraph({ text: " " }),
+                    );
 
+                    if (consensus) {
+                        children.push(new Paragraph({
+                            children: [new TextRun({
+                                text: narrativeModel
+                                    ? `Narrativa: ${narrativeModel}. Resumo, observações, recomendações e justificativas são o texto deste modelo; as notas acima são a média do painel.`
+                                    : "Narrativa: modelo primário. Resumo, observações, recomendações e justificativas são o texto deste modelo; as notas acima são a média do painel.",
+                                italics: true,
+                            })]
+                        }));
+                    }
+
+                    children.push(
                         new Paragraph({ text: "Resumo Executivo", heading: HeadingLevel.HEADING_2 }),
                         new Paragraph(item.discernResult.resumo),
                         new Paragraph({ text: " " }),
@@ -308,20 +362,55 @@ export async function exportDocx(data: AnalysisItem[], filename: string) {
                         new Paragraph({ text: "Análise Detalhada dos Itens", heading: HeadingLevel.HEADING_2 }),
                     );
 
-                    Object.entries(item.discernResult.scores).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, score]) => {
-                        const question = discernQuestions[key as keyof typeof discernQuestions] || key;
+                    const primaryJustifications = item.discernResult.justifications as Record<string, string>;
+                    const panelRows = modelResults.get(item.id) ?? [];
+
+                    Object.keys(reported.scores).sort().forEach((key) => {
+                        const question = discernLabel(key);
+                        const stat = consensus?.perItem[key];
+                        const diverged = !!stat && stat.range > 1;
+
                         children.push(new Paragraph({
                             children: [new TextRun({ text: question, bold: true })]
                         }));
-                        children.push(new Paragraph({
-                            children: [new TextRun({ text: `Score: ${score}/5` })]
-                        }));
+
+                        if (stat) {
+                            const perModel = consensus!.models
+                                .map((model) => `${shortModelName(model)}: ${stat.values[model] ?? "não avaliado"}`)
+                                .join(" · ");
+                            children.push(new Paragraph({
+                                children: [
+                                    new TextRun({ text: `Média do painel: ${stat.mean ?? "não avaliado"}${stat.mean == null ? "" : "/5"} (${perModel})` }),
+                                    ...(diverged ? [new TextRun({ text: `  DIVERGENTE (amplitude ${stat.range})`, bold: true, color: "B45309" })] : []),
+                                ]
+                            }));
+                        } else {
+                            children.push(new Paragraph({
+                                children: [new TextRun({ text: reported.scores[key] == null ? "Score: não avaliado" : `Score: ${reported.scores[key]}/5` })]
+                            }));
+                        }
+
                         children.push(new Paragraph({
                             children: [
-                                new TextRun({ text: "Justificativa: ", italics: true }),
-                                new TextRun({ text: item.discernResult!.justifications[key], italics: true }),
+                                new TextRun({ text: narrativeModel && consensus ? `Justificativa (${narrativeModel}): ` : "Justificativa: ", italics: true }),
+                                new TextRun({ text: primaryJustifications[key], italics: true }),
                             ]
                         }));
+
+                        if (diverged) {
+                            for (const row of panelRows) {
+                                if (row.status !== "done" || row.modelId === reported.narrativeModel) continue;
+                                const text = row.justifications?.[key];
+                                if (!text) continue;
+                                children.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: `Justificativa (${shortModelName(row.modelId)}, nota ${row.scores?.[key] ?? "?"}): `, italics: true }),
+                                        new TextRun({ text, italics: true }),
+                                    ]
+                                }));
+                            }
+                        }
+
                         children.push(new Paragraph({ text: " " }));
                     });
                 } else {

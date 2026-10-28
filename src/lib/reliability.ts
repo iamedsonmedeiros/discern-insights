@@ -114,7 +114,7 @@ export function computeIcc(rows: number[][]): IccResult | null {
  * every model in `models` produced a score are kept.
  */
 export function buildIccMatrix(
-  analyses: { perItem: Record<string, { values: Record<string, number> }> }[],
+  analyses: { perItem: Record<string, { values: Record<string, number | null> }> }[],
   models: string[]
 ): number[][] {
   const rows: number[][] = [];

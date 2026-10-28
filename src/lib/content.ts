@@ -11,6 +11,8 @@ import { createHash } from "crypto";
 import { summarizeLongContent } from "@/ai/flows/summarize-long-content";
 import { estimateCost, getPanel, type DiscernEvaluator } from "@/ai/evaluators";
 import { redis, normalizeUrlForCache, isRedisConfigured } from "@/lib/redis";
+import { classifyUrl, MIN_TEXT_LENGTH, REJECTION_REASONS } from "@/lib/eligibility";
+import { INSTRUMENT_VERSION } from "@/lib/discern-items";
 import type { AnalysisItem, AnalysisStatus } from "@/lib/types";
 
 // Texts below this length go straight to the model. Frontier models handle
@@ -23,6 +25,29 @@ const CONTENT_CACHE_TTL_SECONDS = 60 * 60 * 48; // 48h: dedup scraping across jo
 const ANALYSIS_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7; // 7d: reuse per-model result
 
 const MIN_TEXT_LENGTH_FOR_VIDEO_PAGES = 1500;
+
+// When the target site blocks Jina, Jina still answers HTTP 200 and writes the
+// upstream failure into the body, e.g. "Warning: Target URL returned error 403: Forbidden".
+const JINA_TARGET_ERROR = /^Warning: Target URL returned error (\d{3})/m;
+
+const BLOCKED_PAGE =
+  /verify you are human|estabelecendo uma conexão segura|verifique se você é humano|bot verification|security check|request id|access denied|acesso negado|403 forbidden|you don't have permission to access/i;
+
+/**
+ * Rejects text that must never become a snapshot: upstream error pages and
+ * pages too short to be an article. Applied to fresh scrapes AND cache hits, so
+ * a bad snapshot cached before this check existed is not reused.
+ */
+function rejectUnusableText(text: string): string | null {
+  const targetError = text.match(JINA_TARGET_ERROR);
+  if (targetError) {
+    return `O site bloqueou a extração (HTTP ${targetError[1]}). Faça a análise manual desta página.`;
+  }
+  if (text.length < MIN_TEXT_LENGTH) {
+    return `Conteúdo extraído insuficiente (${text.length} caracteres). A página provavelmente retornou erro ou bloqueio. Faça a análise manual desta página.`;
+  }
+  return null;
+}
 
 type Meta = NonNullable<AnalysisItem["meta"]>;
 
@@ -54,8 +79,10 @@ function contentCacheKey(url: string): string {
   return `content:${normalizeUrlForCache(url)}`;
 }
 
+// The instrument version is part of the key: a result scored against another
+// item set must never be served for the current one.
 function analysisCacheKey(modelId: string, hash: string): string {
-  return `analysis:${modelId}:${hash}`;
+  return `analysis:${INSTRUMENT_VERSION}:${modelId}:${hash}`;
 }
 
 export function htmlToText(html: string): string {
@@ -103,34 +130,24 @@ export function htmlToText(html: string): string {
 export async function extractContent(url: string): Promise<ExtractionResult> {
   const meta: Meta = {};
 
-  // Immediately check for direct YouTube/Vimeo/Instagram/TikTok URLs
-  if (/youtube\.com|youtu\.be|vimeo\.com|instagram\.com\/reel\/|tiktok\.com/.test(url)) {
-    return {
-      ok: false,
-      status: "not_eligible_video",
-      reason: "DISCERN does not analyze videos",
-      meta,
-    };
-  }
-
-  // Immediately check for direct PDF URLs by extension
-  if (url.toLowerCase().endsWith(".pdf")) {
-    return {
-      ok: false,
-      status: "not_eligible_pdf",
-      reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
-      meta,
-    };
+  // Social networks, video platforms and direct PDFs are excluded by URL alone.
+  const rejection = classifyUrl(url);
+  if (rejection) {
+    return { ok: false, status: rejection.status, reason: rejection.reason, meta };
   }
 
   // --- Content cache check (snapshot reuse) ---
   const cacheKey = contentCacheKey(url);
   if (isRedisConfigured()) {
     try {
-      const cached = await redis.get(cacheKey);
-      if (cached) {
+      const cached = (await redis.get(cacheKey)) as Extract<ExtractionResult, { ok: true }> | null;
+      if (cached && !rejectUnusableText(cached.text)) {
         console.log(`Content cache hit for ${url}`);
-        return cached as Extract<ExtractionResult, { ok: true }>;
+        return cached;
+      }
+      if (cached) {
+        console.warn(`Discarding unusable cached snapshot for ${url}`);
+        await redis.del(cacheKey);
       }
     } catch (e) {
       console.warn("Redis content read failed, continuing without cache:", e);
@@ -150,8 +167,14 @@ export async function extractContent(url: string): Promise<ExtractionResult> {
       });
 
       if (jinaResponse.ok) {
-        html = await jinaResponse.text();
-        console.log(`Successfully scraped using Jina AI: ${url}`);
+        const body = await jinaResponse.text();
+        const targetError = body.match(JINA_TARGET_ERROR);
+        if (targetError) {
+          console.warn(`Jina got HTTP ${targetError[1]} from ${url}, falling back to native fetch.`);
+        } else {
+          html = body;
+          console.log(`Successfully scraped using Jina AI: ${url}`);
+        }
       }
     } catch (jinaError) {
       console.warn(`Jina AI scraping failed for ${url}, falling back to native fetch.`, jinaError);
@@ -178,6 +201,16 @@ export async function extractContent(url: string): Promise<ExtractionResult> {
 
       meta.httpStatus = response.status;
 
+      // The page exists but refuses automated access — not "offline".
+      if ([401, 403, 429].includes(response.status)) {
+        return {
+          ok: false,
+          status: "scraping_error",
+          reason: `O site bloqueou a extração (HTTP ${response.status}). Faça a análise manual desta página.`,
+          meta,
+        };
+      }
+
       if (!response.ok) {
         return {
           ok: false,
@@ -189,22 +222,14 @@ export async function extractContent(url: string): Promise<ExtractionResult> {
 
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("application/pdf")) {
-        return {
-          ok: false,
-          status: "not_eligible_pdf",
-          reason: "O DISCERN não analisa PDFs. Esta URL aponta diretamente para um arquivo PDF.",
-          meta,
-        };
+        return { ok: false, status: "not_eligible_pdf", reason: REJECTION_REASONS.pdf, meta };
       }
 
       html = await response.text();
     }
 
     // Check for security verification pages (e.g. Cloudflare, generic protection)
-    const isSecurityPage =
-      /verify you are human|estabelecendo uma conexão segura|verifique se você é humano|bot verification|security check|request id/i.test(
-        html
-      );
+    const isSecurityPage = BLOCKED_PAGE.test(html);
     if (isSecurityPage && html.length < 10000) {
       return {
         ok: false,
@@ -241,6 +266,11 @@ export async function extractContent(url: string): Promise<ExtractionResult> {
         reason: "Could not extract text content from the page.",
         meta,
       };
+    }
+
+    const unusable = rejectUnusableText(textContent);
+    if (unusable) {
+      return { ok: false, status: "scraping_error", reason: unusable, meta };
     }
 
     const result: Extract<ExtractionResult, { ok: true }> = {

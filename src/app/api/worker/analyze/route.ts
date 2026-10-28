@@ -49,7 +49,7 @@ async function finalizeItem(
   const consensus = computeConsensus(
     succeeded.map((row): ModelScores => ({
       modelId: row.model_id,
-      scores: row.scores as Record<string, number>,
+      scores: row.scores as Record<string, number | null>,
     }))
   );
 

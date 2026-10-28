@@ -6,13 +6,17 @@
 
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
-import type { AnalysisItem } from '@/lib/types';
+import { formatArticleData, type ArticleItem } from '@/lib/article-data';
 
 
 const CreateScientificArticleInputSchema = z.object({
-  items: z.array(z.any()).describe('An array of completed analysis items.'),
+  items: z.array(z.any()).describe('Every screened item (included and excluded), trimmed by toArticleItem.'),
 });
-export type CreateScientificArticleInput = z.infer<typeof CreateScientificArticleInputSchema>;
+export type CreateScientificArticleInput = { items: ArticleItem[] };
+
+const ArticlePromptInputSchema = z.object({
+  analysisData: z.string().describe('Sample flow, panel, aggregate statistics and per-website data, pre-computed.'),
+});
 
 
 const CreateScientificArticleOutputSchema = z.object({
@@ -25,35 +29,9 @@ export async function createScientificArticle(input: CreateScientificArticleInpu
   return createScientificArticleFlow(input);
 }
 
-function formatAnalysisDataForPrompt(items: AnalysisItem[]): string {
-    return items
-        .map(item => {
-            if (!item.discernResult) return '';
-
-            const scores = Object.entries(item.discernResult.scores)
-                .map(([key, score]) => `${key}: ${score}`)
-                .join(', ');
-
-            return `
-Site: ${item.meta?.title || item.url}
-URL: ${item.url}
-Status: ${item.status}
-- Resumo Executivo: ${item.discernResult.resumo}
-- Observações: ${item.discernResult.observacoes}
-- Recomendações: ${item.discernResult.recommmendacoes}
-- Scores (1-5): ${scores}
-- Score Geral: ${item.discernResult.domainAverages.score_geral}
-- Média Confiabilidade: ${item.discernResult.domainAverages.confiabilidade}
-- Média Qualidade do Tratamento: ${item.discernResult.domainAverages.qualidade_tratamento}
-`;
-        })
-        .join('\n---\n');
-}
-
-
 const articleWriterPrompt = ai.definePrompt({
     name: 'articleWriterPrompt',
-    input: { schema: CreateScientificArticleInputSchema },
+    input: { schema: ArticlePromptInputSchema },
     output: { schema: CreateScientificArticleOutputSchema },
     prompt: `Você é um pesquisador sênior e especialista em redação científica na área de coloproctologia. Sua tarefa é transformar uma análise de dados brutos sobre a qualidade de sites de saúde em um artigo original, pronto para submissão ao *Journal of Coloproctology*.
 
@@ -63,6 +41,8 @@ const articleWriterPrompt = ai.definePrompt({
 **Sua Tarefa:**
 
 Você deve seguir **ESTRITAMENTE** as normas do *Journal of Coloproctology* para gerar o manuscrito.
+
+0.  **Números:** Todos os números (fluxo da amostra, médias, desvios padrão, ICC, contagens de divergência) já foram calculados pelo sistema e estão nos dados acima. Reporte exatamente esses valores; não recalcule nem invente números. Os scores de cada site são a média do painel de modelos quando indicado ("mean of N models"); os textos qualitativos (resumo, observações, recomendações) são de um único modelo, identificado em "Narrative below written by".
 
 1.  **Analise Comparativa Profunda:**
     *   Não apenas liste os dados. Identifique padrões, tendências, pontos fortes e fracos em todos os sites.
@@ -91,7 +71,7 @@ Você deve seguir **ESTRITAMENTE** as normas do *Journal of Coloproctology* para
 # Abstract
 
 **Objective:** To evaluate the quality of online health information regarding coloproctological conditions using the DISCERN instrument.
-**Methods:** A descriptive, cross-sectional study was conducted. Websites were identified through [descreva brevemente como foram encontrados, ex: 'common search engine queries']. The quality of information was assessed by an AI-powered tool based on the 16 items of the DISCERN methodology, covering reliability and quality of treatment information.
+**Methods:** A descriptive, cross-sectional study was conducted. Websites were identified through [descreva brevemente como foram encontrados, ex: 'common search engine queries']. The quality of information was assessed with the 16-item DISCERN instrument by a blinded panel of large language models [cite os modelos do "Evaluation panel"], with each item scored as the panel mean and inter-rater agreement measured by intraclass correlation. [Se os dados indicarem avaliação por modelo único, descreva assim.]
 **Results:** [Sintetize os resultados principais aqui. Inclua a média geral de score, os scores médios de confiabilidade e qualidade. Destaque os critérios com maiores e menores pontuações. Ex: "The mean overall quality score was X.XX ± Y.YY. Reliability scores (mean = A.AA) were generally [higher/lower] than treatment quality scores (mean = B.BB). Items related to [e.g., 'source citation'] scored highest, while items concerning [e.g., 'description of risks'] scored lowest."]
 **Conclusion:** [Conclua sobre a qualidade geral da informação encontrada e suas implicações. Ex: "The quality of online information for coloproctology patients is [variable/poor/moderate], with significant deficiencies in [mencione as áreas críticas]. There is a pressing need for higher-quality, evidence-based online resources."]
 
@@ -109,15 +89,23 @@ Você deve seguir **ESTRITAMENTE** as normas do *Journal of Coloproctology* para
 
 This study employed an automated analysis of publicly available health websites. The selection process mimicked typical patient behavior, using common search terms related to coloproctology on major search engines.
 
-The core of the evaluation was performed by an AI agent trained to apply the DISCERN instrument (University of Oxford). This validated 16-item questionnaire assesses two main domains: the reliability of the publication (items 1-8) and the quality of information on treatment choices (items 9-15). A final item (16) provides an overall quality rating. Each item was scored on a 5-point scale (1=very poor, 5=excellent).
+**Eligibility.** Web pages with written text were included. Before any evaluation, URLs were screened automatically and excluded when they were social media posts (Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn posts, Pinterest, Reddit, Kwai, Telegram, WhatsApp; LinkedIn Pulse articles were accepted as long-form written publications), video platforms or video-only pages, or PDF files, as these formats fall outside the scope of the DISCERN instrument. Pages that blocked automated access, returned an HTTP error, or yielded fewer than 500 characters of text were also excluded. [Reporte o fluxo da amostra com os números da seção "Sample flow".]
 
-The analysis was conducted between [Mês/Ano] and [Mês/Ano]. Data extracted included the 16 individual scores, justifications, domain averages, and a qualitative summary for each website. Statistical analysis was descriptive, focusing on mean scores and standard deviations for each DISCERN item and domain across all evaluated websites.
+**Content extraction.** The main text of each included page was extracted once and frozen as an immutable snapshot, so that every evaluator assessed exactly the same content.
+
+**DISCERN assessment.** The evaluation applied the DISCERN instrument (University of Oxford), a validated 16-item questionnaire covering the reliability of the publication (items 1-8) and the quality of information on treatment choices (items 9-15), with a final overall quality rating (item 16). Items 1-15 were rated on the instrument's 5-point scale (1 = No, criterion not fulfilled; 2-4 = Partially; 5 = Yes, criterion completely fulfilled), and item 16 from 1 (low quality, serious or extensive shortcomings) to 5 (high quality, minimal shortcomings). Every model received the 16 official questions together with the instrument's rating hints, and followed its skip rule (when item 1 is rated No, item 2 is left unrated and excluded from the mean, as the handbook instructs). Question 5 was not rated high when Question 4 was rated No. [Descreva o painel com os dados da seção "Evaluation panel": quantos e quais modelos de linguagem avaliaram cada snapshot de forma independente e cega, com o mesmo prompt e o mesmo esquema de resposta, sem acesso às notas dos demais.] The score of each item was the mean across models; domain scores were the means of the item means (items 1-8 and 9-15), and the overall score was the mean of item 16. Ratings where models differed by more than one point were flagged as divergent for human review.
+
+**Statistical analysis.** Statistical analysis was descriptive (mean ± standard deviation per item and domain across websites). Agreement between models was quantified with the intraclass correlation coefficient (two-way random effects, absolute agreement): ICC(2,1) for the reliability of a single model and ICC(2,k) for the reliability of the panel mean, interpreted according to Koo and Li. [Se a avaliação foi por modelo único, omita o painel e o ICC.]
+
+The analysis was conducted between [Mês/Ano] and [Mês/Ano].
 
 **Ethical Considerations:** This study analyzed publicly available information and did not involve human participants. Therefore, approval from an ethics committee was not required, in accordance with the Declaration of Helsinki.
 
 ---
 
 # Results
+
+[Comece pelo fluxo da amostra ("Sample flow"): quantas URLs foram triadas, quantas foram excluídas e por qual motivo, e quantas foram analisadas. Sugira uma figura de fluxo, ex: "(See Figure 1 for the sample flow)." Em seguida, reporte a concordância entre os modelos (ICC(2,1), ICC(2,k) e o número de avaliações divergentes) da seção "Evaluation panel".]
 
 [Apresente a síntese dos achados de forma clara. Comece com uma visão geral: "A total of [número] websites were analyzed." Apresente as médias gerais: "The overall mean DISCERN score for all sites was [média] ± [desvio padrão]. The mean score for reliability (items 1-8) was [média], while the mean score for quality of treatment information (items 9-15) was [média]."]
 
@@ -160,8 +148,9 @@ The authors declare no conflicts of interest.
 [**OBRIGATÓRIO:** Insira aqui de 3 a 5 referências relevantes em formato Vancouver. Inclua obrigatoriamente a referência do DISCERN.]
 
 1. Charnock D, Shepperd S, Needham G, Gann R. DISCERN: an instrument for judging the quality of written consumer health information on treatment choices. J Epidemiol Community Health. 1999;53(2):105-11.
-2. [Placeholder para outra referência relevante, ex: um estudo sobre uso da internet por pacientes]
-3. [Placeholder para outra referência relevante, ex: um editorial sobre qualidade da informação]
+2. Koo TK, Li MY. A guideline of selecting and reporting intraclass correlation coefficients for reliability research. J Chiropr Med. 2016;15(2):155-63. [Inclua quando o ICC for reportado.]
+3. [Placeholder para outra referência relevante, ex: um estudo sobre uso da internet por pacientes]
+4. [Placeholder para outra referência relevante, ex: um editorial sobre qualidade da informação]
 `,
     config: {
         temperature: 0.4,
@@ -176,11 +165,9 @@ const createScientificArticleFlow = ai.defineFlow(
         outputSchema: CreateScientificArticleOutputSchema,
     },
     async (input) => {
-        const analysisData = formatAnalysisDataForPrompt(input.items);
-        
-        const { output } = await articleWriterPrompt({
-            analysisData: analysisData
-        });
+        const analysisData = formatArticleData(input.items as ArticleItem[]);
+
+        const { output } = await articleWriterPrompt({ analysisData });
 
         return { articleContent: output!.articleContent };
     }

@@ -16,8 +16,9 @@
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
 import {
-  DiscernOutputSchema,
+  DiscernRequestSchema,
   buildDiscernPrompt,
+  normalizeDiscernOutput,
   type DiscernOutput,
   type TokenUsage,
 } from '@/ai/discern-schema';
@@ -65,7 +66,7 @@ const performDiscernAnalysisFlow = ai.defineFlow(
     const {output, usage} = await ai.generate({
       ...(input.model ? {model: input.model} : {}),
       prompt: buildDiscernPrompt(input),
-      output: {schema: DiscernOutputSchema},
+      output: {schema: DiscernRequestSchema},
       config: GEMINI_CONFIG,
     });
 
@@ -74,7 +75,7 @@ const performDiscernAnalysisFlow = ai.defineFlow(
     }
 
     return {
-      ...output,
+      ...normalizeDiscernOutput(output),
       usage: {
         inputTokens: usage?.inputTokens || 0,
         outputTokens: usage?.outputTokens || 0,
