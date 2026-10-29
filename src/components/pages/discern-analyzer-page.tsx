@@ -4,7 +4,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, analyzeTextDirectly, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults } from "@/app/actions";
+import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
@@ -45,6 +45,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [manualAnalysisText, setManualAnalysisText] = useState("");
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const itemsRef = useRef<AnalysisItem[]>([]);
+  const manualPollRef = useRef<number | null>(null);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const [pasteContent, setPasteContent] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -176,6 +177,12 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                     reason: updatedItem.reason,
                     meta: updatedItem.meta,
                     discernResult: updatedItem.discern_result,
+                    consensus: updatedItem.consensus,
+                    divergenceFlag: updatedItem.divergence_flag,
+                    divergentItems: updatedItem.divergent_items,
+                    panelIncomplete: updatedItem.panel_incomplete,
+                    modelsTotal: updatedItem.models_total,
+                    modelId: updatedItem.model_id,
                     updatedAt: updatedItem.updated_at,
                   }
                 : item
@@ -224,6 +231,10 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, [backgroundJobId, backgroundJobStatus, toast]);
+
+  useEffect(() => () => {
+    if (manualPollRef.current != null) window.clearInterval(manualPollRef.current);
+  }, []);
 
 
   const activeItem = useMemo(
@@ -507,17 +518,56 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const handleManualAnalysisSubmit = async () => {
     if (!manualAnalysisTargetId || !manualAnalysisText) return;
 
+    const itemId = manualAnalysisTargetId;
     setIsSubmittingManual(true);
     try {
-      const result = await analyzeTextDirectly(manualAnalysisText, locale);
-      const updatedItem = { ...items.find(i => i.id === manualAnalysisTargetId)!, status: 'completed' as const, discernResult: result, reason: 'Manually analyzed', updatedAt: new Date().toISOString() };
+      const started = await startManualAnalysis({
+        itemId,
+        text: manualAnalysisText,
+        language: locale,
+        modelIds: selectedModels,
+      });
+      const names = started.models.map((id) => availableModels.find((m) => m.id === id)?.displayName ?? id);
 
-      setItems(prev => prev.map(item => item.id === manualAnalysisTargetId
-        ? updatedItem
+      setItems((prev) => prev.map((item) => item.id === itemId
+        ? {
+            ...item,
+            status: "processing" as const,
+            reason: undefined,
+            jobId: started.jobId,
+            discernResult: undefined,
+            consensus: undefined,
+            divergenceFlag: undefined,
+            divergentItems: undefined,
+            panelIncomplete: undefined,
+            modelsTotal: started.models.length,
+            updatedAt: new Date().toISOString(),
+          }
         : item
       ));
-      await upsertAnalysisItem(updatedItem);
-      toast({ title: t('manualAnalysis.successTitle'), description: t('manualAnalysis.successBody') });
+
+      // A batch already on screen keeps its progress bar. This item is polled on its own.
+      if (!backgroundJobId || backgroundJobStatus !== "processing") {
+        setBackgroundJobId(started.jobId);
+        setBackgroundJobStatus("processing");
+        setBackgroundProgress({ completed: 0, failed: 0, total: 1 });
+      } else if (manualPollRef.current == null) {
+        manualPollRef.current = window.setInterval(async () => {
+          const updated = await fetchAnalysisItems();
+          const mine = updated.find((item) => item.id === itemId);
+          if (!mine || mine.status === "processing") return;
+          if (manualPollRef.current != null) window.clearInterval(manualPollRef.current);
+          manualPollRef.current = null;
+          setItems(updated);
+          toast({
+            title: mine.status === "completed" ? t("manualAnalysis.successTitle") : t("manualAnalysis.errorTitle"),
+            description: mine.reason || t("manualAnalysis.successBody"),
+            variant: mine.status === "completed" ? "default" : "destructive",
+          });
+        }, 3000);
+      }
+
+      toast({ title: t("manualAnalysis.queuedTitle"), description: t("manualAnalysis.queuedBody", { models: names.join(", ") }) });
       setIsManualAnalysisOpen(false);
       setManualAnalysisText("");
       setManualAnalysisTargetId(null);
@@ -795,6 +845,9 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
             <DialogTitle>{t('manualAnalysis.title')}</DialogTitle>
             <DialogDescription>
               {t('manualAnalysis.description')}
+              {selectedModels.length > 0
+                ? ` ${selectedModels.map((id) => availableModels.find((m) => m.id === id)?.displayName ?? id).join(", ")}.`
+                : ""}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">

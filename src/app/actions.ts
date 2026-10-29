@@ -2,12 +2,14 @@
 
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { ArticleItem } from "@/lib/article-data";
-import type { AnalysisItem, AnalysisStatus, PerformDiscernAnalysisOutput, AnalysisJob } from "@/lib/types";
+import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
-import { extractContent, runPanel, runDiscernAnalysis } from "@/lib/content";
+import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
 import { persistModelResults } from "@/lib/model-results";
 import { computeConsensus } from "@/lib/consensus";
 import { getPanel, getAvailableModels, estimateCost, GEMINI_EVALUATOR_ID } from "@/ai/evaluators";
+import { createAdminClient } from "@/lib/supabase-admin";
+import { publish } from "@/lib/queue";
 // Reverted pdf-parse
 
 // --- Helper to get authenticated user ---
@@ -407,21 +409,95 @@ export async function processUrl(
   };
 }
 
-export async function analyzeTextDirectly(
-  text: string,
-  language: string = 'pt-BR'
-): Promise<PerformDiscernAnalysisOutput> {
-  // Ensure user is authenticated
-  await getAuthenticatedUser();
+/**
+ * Scores pasted text with the same models the user enabled for the automatic
+ * panel. The text is frozen as the snapshot and each model runs in its own
+ * worker, exactly like a URL that was extracted. Returns once the workers are
+ * queued; the item moves to `processing` and finishes via the usual job path.
+ */
+export async function startManualAnalysis(params: {
+  itemId: string;
+  text: string;
+  language?: string;
+  modelIds?: string[];
+}): Promise<{ jobId: string; models: string[] }> {
+  const { supabase, user } = await getAuthenticatedUser();
 
-  try {
-    const { discernResult } = await runDiscernAnalysis(text, language);
-    return discernResult!;
-  } catch (e) {
-    console.error("DISCERN analysis failed during manual analysis:", e);
-    const message = e instanceof Error ? e.message : "Unknown error during analysis.";
-    throw new Error(message);
-  }
+  const text = params.text.trim();
+  if (!text) throw new Error("Cole o texto do artigo antes de analisar.");
+
+  const { data: owned, error: ownedError } = await supabase
+    .from("analysis_items")
+    .select("id")
+    .eq("id", params.itemId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (ownedError || !owned) throw new Error("Item não encontrado.");
+
+  const allowed = getAvailableModels().map((model) => model.id);
+  const requested = (params.modelIds ?? []).filter((id) => allowed.includes(id));
+  const panel = getPanel(requested.length > 0 ? requested : allowed);
+  if (panel.length === 0) throw new Error("Nenhum modelo disponível para a análise.");
+
+  const language = params.language || "pt-BR";
+  const prepared = await prepareTextForAnalysis(text, language);
+  const modelIds = panel.map((evaluator) => evaluator.id);
+
+  const { data: job, error: jobError } = await supabase
+    .from("analysis_jobs")
+    .insert({
+      user_id: user.id,
+      user_email: user.email,
+      total_urls: 1,
+      completed_urls: 0,
+      failed_urls: 0,
+      status: "processing",
+      language,
+      keyword: "Análise manual",
+      models: modelIds,
+    })
+    .select()
+    .single();
+
+  if (jobError || !job) throw new Error("Não foi possível iniciar a análise manual.");
+
+  const admin = createAdminClient();
+  const { error: clearError } = await admin
+    .from("analysis_model_results")
+    .delete()
+    .eq("item_id", params.itemId);
+  if (clearError) throw new Error("Não foi possível limpar a avaliação anterior deste item.");
+
+  const { error: updateError } = await supabase
+    .from("analysis_items")
+    .update({
+      status: "processing",
+      reason: null,
+      job_id: job.id,
+      content_snapshot: prepared.text,
+      content_hash: computeContentHash(prepared.text),
+      models_total: panel.length,
+      discern_result: null,
+      consensus: null,
+      divergence_flag: false,
+      divergent_items: null,
+      panel_incomplete: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.itemId)
+    .eq("user_id", user.id);
+
+  if (updateError) throw new Error(updateError.message);
+
+  await publish(
+    panel.map((evaluator) => ({
+      path: "/api/worker/analyze",
+      body: { jobId: job.id, itemId: params.itemId, modelId: evaluator.id },
+    }))
+  );
+
+  return { jobId: job.id, models: modelIds };
 }
 
 

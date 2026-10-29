@@ -11,7 +11,7 @@ The application is built with a modern web stack, leveraging Next.js for the fro
     *   **Jina AI Integration**: Uses `r.jina.ai` to extract clean Markdown content from modern websites, including JS-heavy Single Page Applications.
     *   **Fallback Logic**: Automatically falls back to a native `fetch` (mimicking Google Bot) if the primary scraper fails.
     *   Identifies and filters out non-eligible content (social media posts, video platforms, PDFs) and rejects blocked or error pages. See [URL Eligibility Rules](#url-eligibility-rules).
-*   **AI-Powered Summarization**: For articles with text content exceeding 30,000 characters, the tool uses an AI flow to summarize the content, ensuring the core information is retained for analysis.
+*   **AI-Powered Summarization**: For articles with text content exceeding 300,000 characters, Gemini 2.5 Flash summarizes the content once, before any model scores it, so the whole panel reads the same text.
 *   **DISCERN Analysis**:
     *   An AI flow evaluates the extracted text against the 16 items of the DISCERN instrument.
     *   Generates a score (1-5) and a detailed justification for each of the 16 items.
@@ -73,7 +73,7 @@ Excluded and failed URLs are kept in the queue (systematic reviews must report t
 To ensure high-precision assessment by the AI model, the platform employs a specialized engine that isolates the primary text from web pages. This process removes irrelevant "noise"—including advertisements, navigation menus, and pop-ups—that could otherwise introduce bias or distract the AI. Robust architectural layers ensure that content is correctly retrieved even from modern, complex websites with technical bot protections.
 
 ### 3. Contextual Refinement for Lengthy Content
-For long-form health articles (exceeding 30,000 characters), the system performs an initial **Intelligent Synthesis**. This stage condenses the material while strictly preserving all essential clinical information and nuances. This optimization allows the AI to evaluate the material without losing the depth required for accurate scoring against the DISCERN protocol.
+For long-form health articles (exceeding 300,000 characters), the system performs an initial **Intelligent Synthesis** with Gemini 2.5 Flash. This stage condenses the material while strictly preserving all essential clinical information and nuances. This optimization allows the AI to evaluate the material without losing the depth required for accurate scoring against the DISCERN protocol.
 
 ### 2. Analysis Engine (DISCERN Protocol)
 The core logic is an AI "Evaluator Agent" powered by **Google Gemini 2.5 Flash**, orchestrated by **Google Genkit**.
