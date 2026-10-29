@@ -5,7 +5,7 @@ import { type AnalysisItem, type AnalysisStatus } from "./types";
 import { getReportedScores, shortModelName } from "./reported-scores";
 import { discernLabel, isCurrentInstrument } from "./discern-items";
 import type { ModelResultRow } from "@/app/actions";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Table, TableRow, TableCell, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
 
 
@@ -451,41 +451,77 @@ export async function exportDocx(
 }
 
 
-function createSection(text: string): Paragraph[] {
-    const paragraphs: Paragraph[] = [];
+/** "**Objective:** text" → a bold run followed by a plain one. */
+function inlineRuns(line: string): TextRun[] {
+    return line
+        .split(/(\*\*[^*]+\*\*)/g)
+        .filter(Boolean)
+        .map(part => part.startsWith('**') && part.endsWith('**')
+            ? new TextRun({ text: part.slice(2, -2), bold: true })
+            : new TextRun({ text: part.replace(/\*\*/g, '') }));
+}
+
+const tableCells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+
+function markdownTable(lines: string[]): Table {
+    const rows = lines
+        .filter(line => !/^\|?\s*:?-{3,}/.test(line.trim()))
+        .map(tableCells);
+    return new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: rows.map((cells, rowIndex) => new TableRow({
+            tableHeader: rowIndex === 0,
+            children: cells.map(cell => new TableCell({
+                children: [new Paragraph({ children: [new TextRun({ text: cell, bold: rowIndex === 0, size: 20 })] })],
+            })),
+        })),
+    });
+}
+
+function createSection(text: string): (Paragraph | Table)[] {
+    const blocks: (Paragraph | Table)[] = [];
     const lines = text.split('\n');
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().startsWith('|')) {
+            const tableLines: string[] = [];
+            while (i < lines.length && lines[i].trim().startsWith('|')) tableLines.push(lines[i++]);
+            i--;
+            blocks.push(markdownTable(tableLines));
+            continue;
+        }
+
+        const heading = (prefix: number) => line.substring(prefix).replace(/\*\*/g, '');
         if (line.startsWith('### ')) {
-            paragraphs.push(new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
+            blocks.push(new Paragraph({ text: heading(4), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
         } else if (line.startsWith('## ')) {
-            paragraphs.push(new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
+            blocks.push(new Paragraph({ text: heading(3), heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
         } else if (line.startsWith('# ')) {
-            paragraphs.push(new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
+            blocks.push(new Paragraph({ text: heading(2), heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
         } else if (line.trim() === '') {
-            paragraphs.push(new Paragraph({ text: '' }));
+            blocks.push(new Paragraph({ text: '' }));
         } else {
-            const isBold = line.startsWith('**') && line.endsWith('**');
-            const cleanLine = line.replace(/\*\*/g, '');
-            paragraphs.push(new Paragraph({
-                children: [new TextRun({ text: cleanLine, bold: isBold })],
+            blocks.push(new Paragraph({
+                children: inlineRuns(line),
                 spacing: { after: 100 },
                 alignment: AlignmentType.JUSTIFIED
             }));
         }
     }
-    return paragraphs;
+    return blocks;
 }
 
 
 export async function saveDocxFromContent(content: string, filename: string) {
-    const sections = content.split('---').map(s => s.trim());
-    const docChildren: Paragraph[] = sections.flatMap(section => createSection(section));
+    // Only a line holding nothing but "---" separates sections; table rules ("| --- |") must survive.
+    const sections = content.split(/^\s*---\s*$/m).map(s => s.trim());
+    const docChildren = sections.flatMap(section => createSection(section));
 
     const doc = new Document({
         styles: {
             default: {
-                paragraph: {
+                document: {
                     run: {
                         font: "Arial",
                         size: 24, // 12pt

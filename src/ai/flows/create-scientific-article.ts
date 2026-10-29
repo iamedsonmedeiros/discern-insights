@@ -2,173 +2,264 @@
 
 /**
  * @fileOverview Generates a scientific article from DISCERN analysis data.
+ *
+ * Every number comes from `formatArticleData` and Table 1 from `buildScoresTable`;
+ * the model only writes prose around them, in the interface language, about the
+ * topic the user typed. The Methods text and the reference list are fixed here so
+ * the manuscript describes what the system actually did and cites only checked works.
  */
 
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
-import { formatArticleData, type ArticleItem } from '@/lib/article-data';
+import { buildScoresTable, formatArticleData, type ArticleItem } from '@/lib/article-data';
+import type { DiscernLocale } from '@/lib/discern-items';
 
-
-const CreateScientificArticleInputSchema = z.object({
-  items: z.array(z.any()).describe('Every screened item (included and excluded), trimmed by toArticleItem.'),
-});
-export type CreateScientificArticleInput = { items: ArticleItem[] };
-
-const ArticlePromptInputSchema = z.object({
-  analysisData: z.string().describe('Sample flow, panel, aggregate statistics and per-website data, pre-computed.'),
-});
-
+const ARTICLE_MODEL = 'gemini-2.5-flash';
 
 const CreateScientificArticleOutputSchema = z.object({
   articleContent: z.string().describe('The full scientific article manuscript formatted in Markdown.'),
 });
+
+export type CreateScientificArticleInput = {
+  items: ArticleItem[];
+  topic: string;
+  locale: DiscernLocale;
+};
 export type CreateScientificArticleOutput = z.infer<typeof CreateScientificArticleOutputSchema>;
 
+type ReferenceId = 'eysenbachKohler' | 'eysenbachReview' | 'charnock' | 'logullo' | 'shroutFleiss' | 'kooLi';
 
-export async function createScientificArticle(input: CreateScientificArticleInput): Promise<CreateScientificArticleOutput> {
-  return createScientificArticleFlow(input);
+const REFERENCES: Record<ReferenceId, string> = {
+  eysenbachKohler:
+    'Eysenbach G, Köhler C. How do consumers search for and appraise health information on the world wide web? Qualitative study using focus groups, usability tests, and in-depth interviews. BMJ. 2002;324(7337):573-7.',
+  eysenbachReview:
+    'Eysenbach G, Powell J, Kuss O, Sa ER. Empirical studies assessing the quality of health information for consumers on the world wide web: a systematic review. JAMA. 2002;287(20):2691-700.',
+  charnock:
+    'Charnock D, Shepperd S, Needham G, Gann R. DISCERN: an instrument for judging the quality of written consumer health information on treatment choices. J Epidemiol Community Health. 1999;53(2):105-11.',
+  logullo:
+    'Logullo P, Torloni MR, Latorraca COC, Riera R. The Brazilian Portuguese version of the DISCERN instrument: translation procedures and psychometric properties. Value Health Reg Issues. 2019;20:172-9.',
+  shroutFleiss:
+    'Shrout PE, Fleiss JL. Intraclass correlations: uses in assessing rater reliability. Psychol Bull. 1979;86(2):420-8.',
+  kooLi:
+    'Koo TK, Li MY. A guideline of selecting and reporting intraclass correlation coefficients for reliability research. J Chiropr Med. 2016;15(2):155-63.',
+};
+
+// Order of first citation (Vancouver). The ICC references stay last so they can
+// be dropped without renumbering when no panel was used.
+const REFERENCE_ORDER: Record<DiscernLocale, ReferenceId[]> = {
+  en: ['eysenbachKohler', 'eysenbachReview', 'charnock', 'shroutFleiss', 'kooLi'],
+  'pt-BR': ['eysenbachKohler', 'eysenbachReview', 'charnock', 'logullo', 'shroutFleiss', 'kooLi'],
+};
+
+function citations(locale: DiscernLocale) {
+  const order = REFERENCE_ORDER[locale];
+  const cite = (id: ReferenceId) => `[${order.indexOf(id) + 1}]`;
+  const list = order.map((id, i) => `${i + 1}. ${REFERENCES[id]}`).join('\n');
+  return { cite, list };
 }
 
-const articleWriterPrompt = ai.definePrompt({
-    name: 'articleWriterPrompt',
-    input: { schema: ArticlePromptInputSchema },
-    output: { schema: CreateScientificArticleOutputSchema },
-    prompt: `Você é um pesquisador sênior e especialista em redação científica na área de coloproctologia. Sua tarefa é transformar uma análise de dados brutos sobre a qualidade de sites de saúde em um artigo original, pronto para submissão ao *Journal of Coloproctology*.
+function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: string; topic: string; locale: DiscernLocale }): string {
+  const { cite, list } = citations(locale);
+  const pt = locale === 'pt-BR';
+  const language = pt ? 'português do Brasil' : 'inglês (English)';
 
-**Dados Brutos da Análise (Método DISCERN):**
-{{{analysisData}}}
+  const h = pt
+    ? {
+        titlePage: 'Página de rosto',
+        abstract: 'Resumo',
+        intro: 'Introdução',
+        methods: 'Métodos',
+        results: 'Resultados',
+        discussion: 'Discussão',
+        conclusion: 'Conclusão',
+        aiUse: 'Declaração de uso de inteligência artificial',
+        acknowledgments: 'Agradecimentos',
+        conflicts: 'Conflitos de interesse',
+        references: 'Referências',
+      }
+    : {
+        titlePage: 'Title Page',
+        abstract: 'Abstract',
+        intro: 'Introduction',
+        methods: 'Methods',
+        results: 'Results',
+        discussion: 'Discussion',
+        conclusion: 'Conclusion',
+        aiUse: 'Use of artificial intelligence',
+        acknowledgments: 'Acknowledgments',
+        conflicts: 'Conflicts of Interest',
+        references: 'References',
+      };
 
-**Sua Tarefa:**
+  const titlePage = pt
+    ? `**Autores:** [A preencher: nomes dos autores]
+**Afiliações:** [A preencher: instituições]
+**Título resumido:** [título resumido de até 40 caracteres, escrito por você]
+**Autor correspondente:** [A preencher: nome, endereço e e-mail]`
+    : `**Authors:** [To be completed: author names]
+**Affiliations:** [To be completed: institutions]
+**Short title:** [short title of up to 40 characters, written by you]
+**Corresponding author:** [To be completed: name, address and email]`;
 
-Você deve seguir **ESTRITAMENTE** as normas do *Journal of Coloproctology* para gerar o manuscrito.
+  const methods = pt
+    ? `**Seleção das páginas.** [A preencher pelos autores: estratégia de busca — buscador, termos de busca, data da busca e critério de seleção das URLs.]
 
-0.  **Números:** Todos os números (fluxo da amostra, médias, desvios padrão, ICC, contagens de divergência) já foram calculados pelo sistema e estão nos dados acima. Reporte exatamente esses valores; não recalcule nem invente números. Os scores de cada site são a média do painel de modelos quando indicado ("mean of N models"); os textos qualitativos (resumo, observações, recomendações) são de um único modelo, identificado em "Narrative below written by".
+**Elegibilidade.** Foram incluídas páginas da web com texto escrito. Antes de qualquer avaliação, as URLs foram triadas automaticamente e excluídas quando eram publicações em redes sociais (Facebook, Instagram, TikTok, X/Twitter, Threads, publicações do LinkedIn, Pinterest, Reddit, Kwai, Telegram, WhatsApp; artigos do LinkedIn Pulse foram aceitos como publicações escritas de formato longo), plataformas de vídeo ou páginas compostas apenas por vídeo, ou arquivos PDF, por estarem fora do escopo do instrumento DISCERN. Também foram excluídas páginas que bloquearam o acesso automatizado, retornaram erro HTTP ou forneceram menos de 500 caracteres de texto. [Reporte o fluxo da amostra com os números da seção "Sample flow".]
 
-1.  **Analise Comparativa Profunda:**
-    *   Não apenas liste os dados. Identifique padrões, tendências, pontos fortes e fracos em todos os sites.
-    *   Quais critérios do DISCERN são consistentemente bem ou mal avaliados?
-    *   Existem outliers? Sites que se destacam (positiva ou negativamente)?
+**Extração do conteúdo.** O texto principal de cada página incluída foi extraído uma única vez e congelado como uma cópia imutável, de modo que todos os avaliadores analisaram exatamente o mesmo conteúdo.
 
-2.  **Gere o Manuscrito em INGLÊS no formato especificado abaixo:**
-    *   Use Markdown para a formatação. Separe as seções principais com '---'.
-    *   O tom deve ser formal, acadêmico e objetivo.
+**Avaliação pelo DISCERN.** Foi aplicado o instrumento DISCERN ${cite('charnock')}, um questionário validado de 16 questões que avalia a confiabilidade da publicação (questões 1 a 8) e a qualidade da informação sobre as opções de tratamento (questões 9 a 15), com uma avaliação final da qualidade geral (questão 16). As questões 1 a 15 foram pontuadas na escala de 5 pontos do instrumento (1 = Não, critério não atendido; 2 a 4 = Parcialmente; 5 = Sim, critério plenamente atendido), e a questão 16 de 1 (baixa qualidade, deficiências graves ou extensas) a 5 (alta qualidade, deficiências mínimas). Os modelos receberam as 16 questões oficiais em inglês, com as dicas de avaliação do instrumento, e seguiram a regra de salto do manual: quando a questão 1 foi avaliada como Não, a questão 2 ficou sem nota e foi excluída da média. A questão 5 não recebeu nota alta quando a questão 4 foi avaliada como Não. Neste manuscrito, as questões são citadas na versão brasileira validada ${cite('logullo')}. [Descreva o painel com os dados da seção "Evaluation panel": quantos e quais modelos de linguagem avaliaram cada cópia de forma independente, com o mesmo prompt e o mesmo esquema de resposta, sem acesso às notas dos demais.] A nota de cada questão foi a média entre os modelos; as notas de domínio foram as médias das notas das questões (questões 1 a 8 e 9 a 15), e a nota geral foi a média da questão 16. Avaliações em que os modelos diferiram em mais de um ponto foram sinalizadas como divergentes para revisão humana.
 
-**ESTRUTURA OBRIGATÓRIA DO ARTIGO:**
+**Análise estatística.** A análise estatística foi descritiva (média ± desvio padrão por questão e por domínio entre os sites). A concordância entre os modelos foi quantificada pelo coeficiente de correlação intraclasse (efeitos aleatórios de duas vias, concordância absoluta) ${cite('shroutFleiss')}: ICC(2,1) para a confiabilidade de um único modelo e ICC(2,k) para a confiabilidade da média do painel, interpretados segundo Koo e Li ${cite('kooLi')}. Não foram realizados testes de hipótese.
 
----
+As páginas foram analisadas em [use o período da seção "Study period"].
 
-# Title Page
+**Aspectos éticos.** Este estudo analisou informações de acesso público e não envolveu participantes humanos.`
+    : `**Page selection.** [To be completed by the authors: search strategy — search engine, search terms, date of the search, and how the URLs were selected.]
 
-## **[Título claro e objetivo em inglês sobre a qualidade da informação online em coloproctologia, baseado nos dados]**
-
-**Authors:** Author A. Placeholder¹, Author B. Placeholder²
-**Affiliations:** 1. Department of Fictional Studies, University of Example, City, Country. 2. AI Research Division, Genkit Institute, Virtual City, World.
-**Short title:** Quality of online health information (<= 40 caracteres)
-**Corresponding author:** A. Placeholder, University of Example. Email: placeholder@example.edu.
-
----
-
-# Abstract
-
-**Objective:** To evaluate the quality of online health information regarding coloproctological conditions using the DISCERN instrument.
-**Methods:** A descriptive, cross-sectional study was conducted. Websites were identified through [descreva brevemente como foram encontrados, ex: 'common search engine queries']. The quality of information was assessed with the 16-item DISCERN instrument by a blinded panel of large language models [cite os modelos do "Evaluation panel"], with each item scored as the panel mean and inter-rater agreement measured by intraclass correlation. [Se os dados indicarem avaliação por modelo único, descreva assim.]
-**Results:** [Sintetize os resultados principais aqui. Inclua a média geral de score, os scores médios de confiabilidade e qualidade. Destaque os critérios com maiores e menores pontuações. Ex: "The mean overall quality score was X.XX ± Y.YY. Reliability scores (mean = A.AA) were generally [higher/lower] than treatment quality scores (mean = B.BB). Items related to [e.g., 'source citation'] scored highest, while items concerning [e.g., 'description of risks'] scored lowest."]
-**Conclusion:** [Conclua sobre a qualidade geral da informação encontrada e suas implicações. Ex: "The quality of online information for coloproctology patients is [variable/poor/moderate], with significant deficiencies in [mencione as áreas críticas]. There is a pressing need for higher-quality, evidence-based online resources."]
-
-**Keywords:** Coloproctology, Health Information, Internet, Quality, DISCERN, Patient Education. (Use até 6 termos MeSH)
-
----
-
-# Introduction
-
-[Contextualize a importância da internet como fonte de informação de saúde para pacientes com condições colorretais. Explique por que a qualidade e a confiabilidade dessa informação são cruciais para a tomada de decisão do paciente e para a relação médico-paciente. Introduza o método DISCERN como uma ferramenta validada para essa avaliação. Aponte a lacuna que seu estudo preenche, por exemplo, a falta de uma análise sistemática recente da qualidade da informação online em coloproctologia usando ferramentas automatizadas de IA.]
-
----
-
-# Methods
-
-This study employed an automated analysis of publicly available health websites. The selection process mimicked typical patient behavior, using common search terms related to coloproctology on major search engines.
-
-**Eligibility.** Web pages with written text were included. Before any evaluation, URLs were screened automatically and excluded when they were social media posts (Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn posts, Pinterest, Reddit, Kwai, Telegram, WhatsApp; LinkedIn Pulse articles were accepted as long-form written publications), video platforms or video-only pages, or PDF files, as these formats fall outside the scope of the DISCERN instrument. Pages that blocked automated access, returned an HTTP error, or yielded fewer than 500 characters of text were also excluded. [Reporte o fluxo da amostra com os números da seção "Sample flow".]
+**Eligibility.** Web pages with written text were included. Before any evaluation, URLs were screened automatically and excluded when they were social media posts (Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn posts, Pinterest, Reddit, Kwai, Telegram, WhatsApp; LinkedIn Pulse articles were accepted as long-form written publications), video platforms or video-only pages, or PDF files, as these formats fall outside the scope of the DISCERN instrument. Pages that blocked automated access, returned an HTTP error, or yielded fewer than 500 characters of text were also excluded. [Report the sample flow with the numbers from the "Sample flow" section.]
 
 **Content extraction.** The main text of each included page was extracted once and frozen as an immutable snapshot, so that every evaluator assessed exactly the same content.
 
-**DISCERN assessment.** The evaluation applied the DISCERN instrument (University of Oxford), a validated 16-item questionnaire covering the reliability of the publication (items 1-8) and the quality of information on treatment choices (items 9-15), with a final overall quality rating (item 16). Items 1-15 were rated on the instrument's 5-point scale (1 = No, criterion not fulfilled; 2-4 = Partially; 5 = Yes, criterion completely fulfilled), and item 16 from 1 (low quality, serious or extensive shortcomings) to 5 (high quality, minimal shortcomings). Every model received the 16 official questions together with the instrument's rating hints, and followed its skip rule (when item 1 is rated No, item 2 is left unrated and excluded from the mean, as the handbook instructs). Question 5 was not rated high when Question 4 was rated No. [Descreva o painel com os dados da seção "Evaluation panel": quantos e quais modelos de linguagem avaliaram cada snapshot de forma independente e cega, com o mesmo prompt e o mesmo esquema de resposta, sem acesso às notas dos demais.] The score of each item was the mean across models; domain scores were the means of the item means (items 1-8 and 9-15), and the overall score was the mean of item 16. Ratings where models differed by more than one point were flagged as divergent for human review.
+**DISCERN assessment.** The evaluation applied the DISCERN instrument ${cite('charnock')}, a validated 16-item questionnaire covering the reliability of the publication (items 1-8) and the quality of information on treatment choices (items 9-15), with a final overall quality rating (item 16). Items 1-15 were rated on the instrument's 5-point scale (1 = No, criterion not fulfilled; 2-4 = Partially; 5 = Yes, criterion completely fulfilled), and item 16 from 1 (low quality, serious or extensive shortcomings) to 5 (high quality, minimal shortcomings). Every model received the 16 official questions together with the instrument's rating hints, and followed its skip rule (when item 1 is rated No, item 2 is left unrated and excluded from the mean, as the handbook instructs). Question 5 was not rated high when Question 4 was rated No. [Describe the panel with the data from the "Evaluation panel" section: how many and which language models independently evaluated each snapshot, with the same prompt and response schema, without access to the other models' ratings.] The score of each item was the mean across models; domain scores were the means of the item means (items 1-8 and 9-15), and the overall score was the mean of item 16. Ratings where models differed by more than one point were flagged as divergent for human review.
 
-**Statistical analysis.** Statistical analysis was descriptive (mean ± standard deviation per item and domain across websites). Agreement between models was quantified with the intraclass correlation coefficient (two-way random effects, absolute agreement): ICC(2,1) for the reliability of a single model and ICC(2,k) for the reliability of the panel mean, interpreted according to Koo and Li. [Se a avaliação foi por modelo único, omita o painel e o ICC.]
+**Statistical analysis.** Statistical analysis was descriptive (mean ± standard deviation per item and domain across websites). Agreement between models was quantified with the intraclass correlation coefficient (two-way random effects, absolute agreement) ${cite('shroutFleiss')}: ICC(2,1) for the reliability of a single model and ICC(2,k) for the reliability of the panel mean, interpreted according to Koo and Li ${cite('kooLi')}. No hypothesis tests were performed.
 
-The analysis was conducted between [Mês/Ano] and [Mês/Ano].
+The pages were analyzed in [use the period from the "Study period" section].
 
-**Ethical Considerations:** This study analyzed publicly available information and did not involve human participants. Therefore, approval from an ethics committee was not required, in accordance with the Declaration of Helsinki.
+**Ethical considerations.** This study analyzed publicly available information and did not involve human participants.`;
 
----
+  const aiUse = pt
+    ? `Este rascunho foi gerado por um modelo de linguagem (${ARTICLE_MODEL}) a partir dos dados calculados pelo sistema. Os autores devem revisá-lo e editá-lo, e assumem a responsabilidade pelo conteúdo.`
+    : `This draft was generated by a large language model (${ARTICLE_MODEL}) from the data computed by the system. The authors must review and edit it, and take responsibility for its content.`;
 
-# Results
+  const toFill = pt ? '[A preencher]' : '[To be completed]';
 
-[Comece pelo fluxo da amostra ("Sample flow"): quantas URLs foram triadas, quantas foram excluídas e por qual motivo, e quantas foram analisadas. Sugira uma figura de fluxo, ex: "(See Figure 1 for the sample flow)." Em seguida, reporte a concordância entre os modelos (ICC(2,1), ICC(2,k) e o número de avaliações divergentes) da seção "Evaluation panel".]
+  return `Você é um pesquisador sênior e especialista em redação científica. Sua tarefa é transformar os dados de uma avaliação da qualidade de páginas de saúde pelo instrumento DISCERN num artigo original, no formato IMRaD.
 
-[Apresente a síntese dos achados de forma clara. Comece com uma visão geral: "A total of [número] websites were analyzed." Apresente as médias gerais: "The overall mean DISCERN score for all sites was [média] ± [desvio padrão]. The mean score for reliability (items 1-8) was [média], while the mean score for quality of treatment information (items 9-15) was [média]."]
+**Tema do estudo:** ${topic}
+**Idioma do manuscrito:** ${language}
 
-[Detalhe os resultados por critério. "The highest-scoring criteria were [critério com maior pontuação] (mean score: X.XX) and [outro critério] (mean score: Y.YY). Conversely, the areas with the most significant quality gaps were [critério com menor pontuação] (mean score: A.AA) and [outro critério] (mean score: B.BB), indicating a general failure to discuss treatment uncertainties and risks." Use os dados para suportar essas afirmações.]
+**Dados da análise (calculados pelo sistema):**
+${analysisData}
 
-[**OBRIGATÓRIO:** Sugira a inclusão de uma tabela ou figura para visualização dos dados, ex: "(See Table 1 for a detailed breakdown of scores per DISCERN item)."]
+**Regras:**
 
----
+1.  **Tema.** O manuscrito inteiro trata da informação online sobre "${topic}". Não mencione outras especialidades ou doenças que não façam parte do tema.
+2.  **Idioma.** Escreva tudo em ${language}, inclusive o título, os títulos de seção (use exatamente os títulos da estrutura abaixo) e o resumo. ${pt ? 'Use vírgula como separador decimal (ex.: 2,33 ± 0,70). Cite as questões do DISCERN com a redação que aparece nos dados.' : 'Quote the DISCERN questions with the wording in the data.'}
+3.  **Números.** Todos os números (fluxo da amostra, médias, desvios padrão, ICC, divergências, período) já foram calculados e estão nos dados. Reporte exatamente esses valores; não recalcule nem invente números. As notas de cada site são a média do painel quando indicado ("mean of N models"); os textos qualitativos de cada site são de um único modelo, identificado em "Narrative below written by".
+4.  **Nada inventado.** Não invente estratégia de busca, datas, autores, instituições, financiamento, testes estatísticos nem referências. Mantenha os trechos entre colchetes que dizem "${toFill}" ou "A preencher"/"To be completed" exatamente como estão. Os demais trechos entre colchetes são instruções para você: substitua-os pelo texto pedido.
+5.  **Estatística.** Não houve teste de hipótese: não use "significativo(a)", "significativamente", "significant", "significantly" nem termos equivalentes em nenhuma seção, nem no sentido coloquial (prefira "importante", "marcado", "acentuado"). Descreva diferenças como descritivas.
+6.  **Referências.** Use somente a lista de referências fornecida, citando pelo número entre colchetes, ex.: ${cite('charnock')}. Não acrescente referências. Para uma afirmação que precise de literatura fora da lista, escreva "${pt ? '[referência a inserir]' : '[reference to be added]'}". Não diga que os achados concordam com a literatura sem citar uma referência da lista. Se o ICC não for reportado (avaliação por modelo único), remova da lista as duas últimas referências e não as cite.
+7.  **Painel.** Se os dados indicarem avaliação por modelo único, omita o painel, o ICC e as divergências.
+8.  **Tabelas e figuras.** Não crie tabelas nem figuras. O sistema acrescenta a ${pt ? 'Tabela 1' : 'Table 1'} (média ± desvio padrão por questão e por domínio) ao final; refira-se a ela no texto dos resultados.
+9.  **Tom.** Formal, acadêmico e objetivo. Não descreva a avaliação por modelos de linguagem como "imparcial", "objetiva" ou "sem viés"; diga que ela é padronizada e reprodutível.
+10. **Limitações obrigatórias na discussão:** o DISCERN foi desenvolvido para avaliadores humanos e os modelos de linguagem não substituem esse julgamento; o tamanho da amostra; a análise retrata um momento específico; a seleção das páginas depende da estratégia de busca descrita nos métodos.
+11. **Métodos.** Copie o texto fixo dos métodos como está, só preenchendo os trechos entre colchetes indicados. Não coloque resultados (ICC, divergências, notas) nos métodos; eles vão nos resultados.
+12. **Comparação entre sites.** Para dizer qual site teve a maior ou a menor nota num domínio, use a seção "Websites ranked by domain".
+13. **Formato.** Markdown. Títulos de seção com "#". Separe as seções com uma linha contendo apenas "---".
 
-# Discussion
-
-[Interprete os resultados, não apenas os repita. O que os scores médios significam na prática? Compare seus achados com a literatura existente sobre a qualidade da informação de saúde online. As fraquezas que você encontrou (ex: falta de fontes, viés) são consistentes com outros estudos?]
-
-[Discuta as implicações clínicas dos seus achados. Como a baixa qualidade da informação pode afetar as decisões do paciente, a ansiedade e a adesão ao tratamento em coloproctologia? Que recomendações você faria para os médicos (ex: orientar pacientes para sites confiáveis) e para os criadores de conteúdo?]
-
-[Aponte as limitações do seu estudo. Ex: "This study has limitations, including the use of an automated AI tool, which, despite its training, may not capture all nuances a human evaluator would. The selection of sites was not exhaustive and represents a snapshot in time."]. Em seguida, ressalte a força do estudo, como a objetividade e escalabilidade da análise por IA.]
-
----
-
-# Conclusion
-
-[Responda diretamente ao objetivo do estudo. Resuma os principais achados em 2-3 frases. Ex: "This analysis reveals that the quality of online health information in coloproctology is highly variable and often fails to meet key quality criteria, particularly concerning the discussion of treatment risks and shared decision-making." Termine com uma recomendação forte e uma visão para o futuro. Ex: "Efforts from medical societies and healthcare providers are crucial to develop and promote high-quality online resources to empower patients and improve health outcomes in coloproctology."]
-
----
-
-# Acknowledgments
-
-The authors thank the AI agent for its tireless analysis.
+**ESTRUTURA OBRIGATÓRIA:**
 
 ---
 
-# Conflicts of Interest
+# ${h.titlePage}
 
-The authors declare no conflicts of interest.
+## [Título claro e objetivo sobre a qualidade da informação online sobre ${topic}, baseado nos dados]
+
+${titlePage}
 
 ---
 
-# References
+# ${h.abstract}
 
-[**OBRIGATÓRIO:** Insira aqui de 3 a 5 referências relevantes em formato Vancouver. Inclua obrigatoriamente a referência do DISCERN.]
+**${pt ? 'Objetivo' : 'Objective'}:** [Objetivo do estudo: avaliar a qualidade da informação online sobre ${topic} com o instrumento DISCERN.]
+**${pt ? 'Métodos' : 'Methods'}:** [Delineamento transversal descritivo; número de URLs triadas e incluídas; avaliação pelas 16 questões do DISCERN por um painel de modelos de linguagem (cite os modelos da seção "Evaluation panel"), com a nota de cada questão como média do painel e a concordância medida pelo ICC. Se houve modelo único, descreva assim.]
+**${pt ? 'Resultados' : 'Results'}:** [Nota geral (questão 16), notas de confiabilidade e de qualidade da informação sobre tratamentos, com média ± DP; critérios com as maiores e as menores notas; ICC quando houver painel.]
+**${pt ? 'Conclusão' : 'Conclusion'}:** [Conclusão sobre a qualidade da informação encontrada e suas implicações, sem extrapolar os dados.]
 
-1. Charnock D, Shepperd S, Needham G, Gann R. DISCERN: an instrument for judging the quality of written consumer health information on treatment choices. J Epidemiol Community Health. 1999;53(2):105-11.
-2. Koo TK, Li MY. A guideline of selecting and reporting intraclass correlation coefficients for reliability research. J Chiropr Med. 2016;15(2):155-63. [Inclua quando o ICC for reportado.]
-3. [Placeholder para outra referência relevante, ex: um estudo sobre uso da internet por pacientes]
-4. [Placeholder para outra referência relevante, ex: um editorial sobre qualidade da informação]
-`,
-    config: {
-        temperature: 0.4,
-    },
-});
+**${pt ? 'Palavras-chave' : 'Keywords'}:** [Até 6 termos ${pt ? 'DeCS' : 'MeSH'} relacionados a ${topic}, informação de saúde, internet e DISCERN.]
 
+---
 
-const createScientificArticleFlow = ai.defineFlow(
-    {
-        name: 'createScientificArticleFlow',
-        inputSchema: CreateScientificArticleInputSchema,
-        outputSchema: CreateScientificArticleOutputSchema,
-    },
-    async (input) => {
-        const analysisData = formatArticleData(input.items as ArticleItem[]);
+# ${h.intro}
 
-        const { output } = await articleWriterPrompt({ analysisData });
+[Contextualize a internet como fonte de informação de saúde para pessoas interessadas em ${topic} ${cite('eysenbachKohler')} e a preocupação com a qualidade dessa informação ${cite('eysenbachReview')}. Explique por que a qualidade da informação sobre opções de tratamento importa para a decisão do paciente nesse tema. Apresente o DISCERN como instrumento validado ${cite('charnock')}${pt ? `, com versão brasileira validada ${cite('logullo')}` : ''}. Termine com o objetivo do estudo. Não afirme que existe uma lacuna na literatura sem uma referência da lista.]
 
-        return { articleContent: output!.articleContent };
-    }
-);
+---
+
+# ${h.methods}
+
+${methods}
+
+---
+
+# ${h.results}
+
+[Comece pelo fluxo da amostra ("Sample flow"): quantas URLs foram triadas, quantas foram excluídas e por qual motivo, e quantas foram analisadas. Em seguida, a concordância entre os modelos (ICC(2,1), ICC(2,k) e o número de avaliações divergentes), quando houver painel.]
+
+[Apresente as médias gerais: nota geral (questão 16), confiabilidade (questões 1 a 8) e qualidade da informação sobre tratamentos (questões 9 a 15), com média ± DP.]
+
+[Detalhe os critérios com as maiores e as menores notas, usando os dados, e remeta à ${pt ? 'Tabela 1' : 'Table 1'}. Se houver sites que se destacam positiva ou negativamente, descreva-os pelos dados de cada site.]
+
+---
+
+# ${h.discussion}
+
+[Interprete os resultados, sem apenas repeti-los: o que as notas significam para quem busca informação sobre ${topic}? Quais critérios do DISCERN são consistentemente bem ou mal atendidos e o que isso representa na prática?]
+
+[Implicações para profissionais de saúde e para quem produz conteúdo sobre ${topic}.]
+
+[Limitações obrigatórias (regra 10) e pontos fortes: a cópia imutável do conteúdo, o painel de modelos com concordância medida e a escala da análise.]
+
+---
+
+# ${h.conclusion}
+
+[Responda ao objetivo em 2 a 3 frases, com base nos dados, e termine com uma recomendação.]
+
+---
+
+# ${h.aiUse}
+
+${aiUse}
+
+---
+
+# ${h.acknowledgments}
+
+${toFill}
+
+---
+
+# ${h.conflicts}
+
+${toFill}
+
+---
+
+# ${h.references}
+
+${list}
+`;
+}
+
+export async function createScientificArticle(input: CreateScientificArticleInput): Promise<CreateScientificArticleOutput> {
+  const topic = input.topic.trim();
+  if (!topic) throw new Error('The article topic is required.');
+
+  const analysisData = formatArticleData(input.items, input.locale);
+  const { output } = await ai.generate({
+    prompt: buildArticlePrompt({ analysisData, topic, locale: input.locale }),
+    output: { schema: CreateScientificArticleOutputSchema },
+    config: { temperature: 0.4 },
+  });
+
+  if (!output?.articleContent) throw new Error('The model returned no article.');
+
+  const table = buildScoresTable(input.items, input.locale);
+  const tablesHeading = input.locale === 'pt-BR' ? 'Tabelas' : 'Tables';
+  return {
+    articleContent: table ? `${output.articleContent.trim()}\n\n---\n\n# ${tablesHeading}\n\n${table}\n` : output.articleContent,
+  };
+}

@@ -39,6 +39,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [isGeneratingArticle, setIsGeneratingArticle] = useState(false);
+  const [isArticleDialogOpen, setIsArticleDialogOpen] = useState(false);
+  const [articleTopic, setArticleTopic] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
   const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string | null>(null);
@@ -588,18 +590,32 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const processedItems = useMemo(() => items.filter(item => item.status !== 'pending' && item.status !== 'processing'), [items]);
   const completedItems = useMemo(() => items.filter(item => item.status === 'completed' && item.discernResult), [items]);
 
-  const handleGenerateArticle = async () => {
+  const handleOpenArticleDialog = () => {
     if (completedItems.length === 0) {
       toast({ title: t('article.noResultsTitle'), description: t('article.noResultsDescription') });
       return;
     }
+    if (!articleTopic.trim()) setArticleTopic(keyword.trim());
+    setIsArticleDialogOpen(true);
+  };
+
+  const handleGenerateArticle = async () => {
+    const topic = articleTopic.trim();
+    if (!topic) return;
+    setIsArticleDialogOpen(false);
     setIsGeneratingArticle(true);
     toast({ title: t('article.generatingTitle'), description: t('article.generatingDescription') });
     try {
       // Excluded items go too: the article opens with the sample flow.
-      const result = await generateArticleAction({ items: processedItems.map(toArticleItem) });
+      const result = await generateArticleAction({ items: processedItems.map(toArticleItem), topic, locale });
       if (result.articleContent) {
-        saveDocxFromContent(result.articleContent, 'coloproctology_article');
+        const slug = topic
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        saveDocxFromContent(result.articleContent, `${slug || 'discern'}_${t('article.filenameSuffix')}`);
         toast({ title: t('article.generatedTitle'), description: t('article.generatedDescription') });
       } else {
         throw new Error(t('article.emptyError'));
@@ -818,7 +834,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                   <Users2 className="mr-2 h-4 w-4" />
                   {t('export.consensusCsv')}
                 </Button>
-                <Button variant="default" className="w-full" onClick={handleGenerateArticle} disabled={completedItems.length === 0 || isGeneratingArticle}>
+                <Button variant="default" className="w-full" onClick={handleOpenArticleDialog} disabled={completedItems.length === 0 || isGeneratingArticle}>
                   {isGeneratingArticle ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
@@ -867,6 +883,33 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
             >
               {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('manualAnalysis.submit')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isArticleDialogOpen} onOpenChange={setIsArticleDialogOpen}>
+        <DialogContent className="sm:max-w-[525px]">
+          <DialogHeader>
+            <DialogTitle>{t('article.dialogTitle')}</DialogTitle>
+            <DialogDescription>{t('article.dialogDescription')}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 py-4">
+            <Label htmlFor="article-topic">{t('article.topicLabel')}</Label>
+            <Input
+              id="article-topic"
+              placeholder={t('article.topicPlaceholder')}
+              value={articleTopic}
+              onChange={(e) => setArticleTopic(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleGenerateArticle();
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button onClick={handleGenerateArticle} disabled={!articleTopic.trim() || isGeneratingArticle}>
+              <BookMarked className="mr-2 h-4 w-4" />
+              {t('article.create')}
             </Button>
           </DialogFooter>
         </DialogContent>

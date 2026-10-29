@@ -2,6 +2,7 @@
 
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { ArticleItem } from "@/lib/article-data";
+import type { DiscernLocale } from "@/lib/discern-items";
 import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
 import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
@@ -504,12 +505,20 @@ export async function startManualAnalysis(params: {
 }
 
 
-export async function generateArticleAction({ items }: { items: ArticleItem[] }) {
+export async function generateArticleAction({
+  items,
+  topic,
+  locale,
+}: {
+  items: ArticleItem[];
+  topic: string;
+  locale: DiscernLocale;
+}) {
   // Ensure user is authenticated
   await getAuthenticatedUser();
 
   try {
-    const result = await createScientificArticle({ items });
+    const result = await createScientificArticle({ items, topic, locale });
     return result;
   } catch (error) {
     console.error("Article generation failed:", error);
