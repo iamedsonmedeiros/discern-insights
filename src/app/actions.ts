@@ -325,7 +325,8 @@ export async function processUrl(
   url: string,
   language: string = 'pt-BR',
   skipAuth: boolean = false,
-  itemId?: string
+  itemId?: string,
+  modelIds?: string[]
 ): Promise<ProcessUrlResult> {
   // Ensure user is authenticated before processing, unless skipped (for workers)
   if (!skipAuth) {
@@ -350,11 +351,13 @@ export async function processUrl(
   };
 
   // --- Stage 2: the panel evaluates the snapshot ---
+  const allowed = getAvailableModels().map((model) => model.id);
+  const requested = (modelIds ?? []).filter((id) => allowed.includes(id));
   const { runs, prepInputTokens, prepOutputTokens } = await runPanel({
     text: extraction.text,
     hash: extraction.hash,
     language,
-    evaluators: getPanel(),
+    evaluators: getPanel(requested),
   });
 
   if (itemId) {

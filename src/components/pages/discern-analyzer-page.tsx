@@ -53,9 +53,10 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const isProcessingRef = useRef(false);
   const isAutoModeRef = useRef(isAutoMode);
 
-  // Model panel selection (background jobs). Empty selection = full panel.
+  // Model panel selection. Empty selection = full panel.
   const [availableModels, setAvailableModels] = useState<{ id: string; displayName: string }[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const selectedModelsRef = useRef<string[]>([]);
 
   // Background job state
   const [isSendingToBackground, setIsSendingToBackground] = useState(false);
@@ -76,7 +77,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     isProcessingRef.current = isProcessing;
     isAutoModeRef.current = isAutoMode;
     itemsRef.current = items;
-  }, [isProcessing, isAutoMode, items]);
+    selectedModelsRef.current = selectedModels;
+  }, [isProcessing, isAutoMode, items, selectedModels]);
 
   useEffect(() => {
     if ("Notification" in window) {
@@ -286,7 +288,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     });
 
     try {
-      const result = await processUrl(nextItem.url, locale, false, nextItem.id);
+      const result = await processUrl(nextItem.url, locale, false, nextItem.id, selectedModelsRef.current);
       const updatedItem = { ...nextItem, ...result, status: result.status, updatedAt: new Date().toISOString() };
       
       setItems((prev) =>
