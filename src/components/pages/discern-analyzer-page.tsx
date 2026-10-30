@@ -33,7 +33,7 @@ interface DiscernAnalyzerPageProps {
 }
 
 export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnalyzerPageProps = {}) {
-  const { t, setLocale, locale } = useI18n();
+  const { t, locale } = useI18n();
   const [items, setItems] = useState<AnalysisItem[]>([]);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);

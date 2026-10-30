@@ -3,6 +3,9 @@ import { discernLabel } from "@/lib/discern-items";
 const translations = {
     'pt-BR': {
         'app.subtitle': 'Analise a qualidade de informações de saúde com IA.',
+        'nav.analyzer': 'Analisador',
+        'nav.history': 'Histórico',
+        'nav.stats': 'Estatísticas',
         'import.title': '1. Importar URLs',
         'import.description': 'Cole uma lista de URLs ou envie um arquivo .txt/.csv.',
         'import.paste': 'Colar',
@@ -174,6 +177,9 @@ const translations = {
     },
     'en': {
         'app.subtitle': 'Analyze the quality of health information with AI.',
+        'nav.analyzer': 'Analyzer',
+        'nav.history': 'History',
+        'nav.stats': 'Statistics',
         'import.title': '1. Import URLs',
         'import.description': 'Paste a list of URLs or upload a .txt/.csv file.',
         'import.paste': 'Paste',

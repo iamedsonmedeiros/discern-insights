@@ -5,7 +5,7 @@ import { type AnalysisItem, type AnalysisStatus } from "./types";
 import { getReportedScores, shortModelName } from "./reported-scores";
 import { discernLabel, isCurrentInstrument } from "./discern-items";
 import type { ModelResultRow } from "@/app/actions";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Table, TableRow, TableCell, WidthType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType, Table, TableRow, TableCell, TableLayoutType, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
 
 
@@ -463,15 +463,28 @@ function inlineRuns(line: string): TextRun[] {
 
 const tableCells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 
+// A4 content width: 11906 DXA minus 2 cm margins on each side. Pages ignores a
+// percentage table width and collapses the columns, so the widths are fixed.
+const PAGE_CONTENT_DXA = 11906 - 1134 * 2;
+const TABLE_COLUMN_DXA = [PAGE_CONTENT_DXA - 2600, 1900, 700];
+
 function markdownTable(lines: string[]): Table {
     const rows = lines
         .filter(line => !/^\|?\s*:?-{3,}/.test(line.trim()))
         .map(tableCells);
+    const columns = rows[0]?.length ?? TABLE_COLUMN_DXA.length;
+    const widths = columns === TABLE_COLUMN_DXA.length
+        ? TABLE_COLUMN_DXA
+        : Array.from({ length: columns }, () => Math.floor(PAGE_CONTENT_DXA / columns));
     return new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
+        width: { size: PAGE_CONTENT_DXA, type: WidthType.DXA },
+        columnWidths: widths,
+        layout: TableLayoutType.FIXED,
         rows: rows.map((cells, rowIndex) => new TableRow({
             tableHeader: rowIndex === 0,
-            children: cells.map(cell => new TableCell({
+            children: cells.map((cell, column) => new TableCell({
+                width: { size: widths[column] ?? widths[widths.length - 1], type: WidthType.DXA },
+                margins: { top: 40, bottom: 40, left: 80, right: 80 },
                 children: [new Paragraph({ children: [new TextRun({ text: cell, bold: rowIndex === 0, size: 20 })] })],
             })),
         })),
@@ -532,6 +545,7 @@ export async function saveDocxFromContent(content: string, filename: string) {
         sections: [{
             properties: {
                 page: {
+                    size: { width: 11906, height: 16838 },
                     margin: {
                         top: 1134, // ~2cm
                         right: 1134,
@@ -540,11 +554,9 @@ export async function saveDocxFromContent(content: string, filename: string) {
                     },
                 },
             },
-            children: docChildren.map(p => {
-                // Use the setSpacing method if properties is private
-                // Or cast to any if necessary for this specific library version
-                (p as any).spacing = { line: 360, before: 0, after: 0 }; 
-                return p;
+            children: docChildren.map(block => {
+                if (block instanceof Paragraph) (block as any).spacing = { line: 360, before: 0, after: 0 };
+                return block;
             }),
         }],
     });

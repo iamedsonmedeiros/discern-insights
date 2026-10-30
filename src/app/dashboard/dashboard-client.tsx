@@ -7,12 +7,14 @@ import { HistoryDashboard } from "@/components/app/history-dashboard";
 import { EligibilityFooter } from "@/components/app/eligibility-footer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LayoutDashboard, Microscope, Clock } from "lucide-react";
+import { useI18n } from "@/components/i18n/use-i18n";
 
 interface DashboardClientProps {
   isAdmin: boolean;
 }
 
 export function DashboardClient({ isAdmin }: DashboardClientProps) {
+  const { t, locale, setLocale } = useI18n();
   const [activeTab, setActiveTab] = useState("analyzer");
   const [historyJobId, setHistoryJobId] = useState<string | undefined>(undefined);
 
@@ -28,20 +30,40 @@ export function DashboardClient({ isAdmin }: DashboardClientProps) {
           <div className="container mx-auto px-4 py-2 flex items-center justify-between">
             <TabsList className="bg-slate-100 p-1 rounded-xl">
               <TabsTrigger value="analyzer" className="rounded-lg px-6 data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <Microscope className="mr-2 h-4 w-4" /> Analisador
+                <Microscope className="mr-2 h-4 w-4" /> {t('nav.analyzer')}
               </TabsTrigger>
               <TabsTrigger value="history" className="rounded-lg px-6 data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <Clock className="mr-2 h-4 w-4" /> Histórico
+                <Clock className="mr-2 h-4 w-4" /> {t('nav.history')}
               </TabsTrigger>
               <TabsTrigger value="stats" className="rounded-lg px-6 data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <LayoutDashboard className="mr-2 h-4 w-4" /> Estatísticas
+                <LayoutDashboard className="mr-2 h-4 w-4" /> {t('nav.stats')}
               </TabsTrigger>
             </TabsList>
-            {isAdmin && (
-              <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold border border-blue-100">
-                ACESSO ADMIN
+            <div className="flex items-center gap-3">
+              <div className="flex items-center rounded-full border border-slate-200 bg-white p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setLocale('pt-BR')}
+                  className={`rounded-full px-2.5 py-1 ${locale === 'pt-BR' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}
+                  aria-pressed={locale === 'pt-BR'}
+                >
+                  PT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLocale('en')}
+                  className={`rounded-full px-2.5 py-1 ${locale === 'en' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}
+                  aria-pressed={locale === 'en'}
+                >
+                  EN
+                </button>
               </div>
-            )}
+              {isAdmin && (
+                <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold border border-blue-100">
+                  ACESSO ADMIN
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

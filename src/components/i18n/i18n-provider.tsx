@@ -1,8 +1,10 @@
 "use client";
 
-import { createContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import translations from './translations';
 import type { Locale, TranslationKey } from './translations';
+
+const LOCALE_KEY = 'discern-locale';
 
 interface I18nContextType {
   locale: Locale;
@@ -13,7 +15,17 @@ interface I18nContextType {
 export const I18nContext = createContext<I18nContextType | undefined>(undefined);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocale] = useState<Locale>('pt-BR');
+  const [locale, setLocaleState] = useState<Locale>('pt-BR');
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(LOCALE_KEY);
+    if (saved === 'en' || saved === 'pt-BR') setLocaleState(saved);
+  }, []);
+
+  const setLocale = (next: Locale) => {
+    setLocaleState(next);
+    window.localStorage.setItem(LOCALE_KEY, next);
+  };
 
   const t = useCallback((key: TranslationKey, replacements?: { [key: string]: string | number }) => {
     let translation = translations[locale][key] || translations['en'][key] || key;

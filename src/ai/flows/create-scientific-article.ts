@@ -58,6 +58,26 @@ function citations(locale: DiscernLocale) {
   return { cite, list };
 }
 
+function pageSelection(topic: string, locale: DiscernLocale): { label: string; text: string } {
+  if (locale === 'pt-BR') {
+    return {
+      label: 'Seleção das páginas',
+      text: `As URLs foram coletadas na busca do Google pelo termo "${topic}". A busca foi feita em www.google.com.br, com a interface em português do Brasil e o país definido como Brasil, numa janela sem conta nem histórico, com a personalização desligada e o termo mantido exatamente como foi digitado. As páginas de resultado foram lidas uma a uma, na ordem em que o Google as apresentou, com pausas entre as páginas. Cada item foi registrado na posição em que apareceu e classificado como resultado orgânico, anúncio, resposta de inteligência artificial, mapa ou outro. Links de anúncios não foram requisitados. A triagem do estudo usou os endereços coletados. [A preencher: número de páginas de resultado coletadas e a data da busca.]`,
+    };
+  }
+  return {
+    label: 'Page selection',
+    text: `URLs were collected from a Google search for "${topic}". The search was run on www.google.com.br, with the interface in Brazilian Portuguese and the country set to Brazil, in a window without an account or history, with personalization turned off and the query kept exactly as typed. Result pages were read one by one, in the order Google displayed them, with pauses between pages. Each item was recorded in the position where it appeared and classified as an organic result, an advertisement, an AI-generated answer, a map, or other. Advertisement links were not requested. The study screened the addresses collected. [To be completed: number of result pages collected and the date of the search.]`,
+  };
+}
+
+/** The model rewrites this paragraph and invents the search date. Put the canonical text back. */
+function keepPageSelection(article: string, topic: string, locale: DiscernLocale): string {
+  const { label, text } = pageSelection(topic, locale);
+  const pattern = new RegExp(`\\*\\*${label}\\.\\*\\*[\\s\\S]*?(?=\\n\\*\\*)`);
+  return pattern.test(article) ? article.replace(pattern, `**${label}.** ${text}\n`) : article;
+}
+
 function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: string; topic: string; locale: DiscernLocale }): string {
   const { cite, list } = citations(locale);
   const pt = locale === 'pt-BR';
@@ -102,7 +122,7 @@ function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: str
 **Corresponding author:** [To be completed: name, address and email]`;
 
   const methods = pt
-    ? `**Seleção das páginas.** [A preencher pelos autores: estratégia de busca — buscador, termos de busca, data da busca e critério de seleção das URLs.]
+    ? `**${pageSelection(topic, locale).label}.** ${pageSelection(topic, locale).text}
 
 **Elegibilidade.** Foram incluídas páginas da web com texto escrito. Antes de qualquer avaliação, as URLs foram triadas automaticamente e excluídas quando eram publicações em redes sociais (Facebook, Instagram, TikTok, X/Twitter, Threads, publicações do LinkedIn, Pinterest, Reddit, Kwai, Telegram, WhatsApp; artigos do LinkedIn Pulse foram aceitos como publicações escritas de formato longo), plataformas de vídeo ou páginas compostas apenas por vídeo, ou arquivos PDF, por estarem fora do escopo do instrumento DISCERN. Também foram excluídas páginas que bloquearam o acesso automatizado, retornaram erro HTTP ou forneceram menos de 500 caracteres de texto. [Reporte o fluxo da amostra com os números da seção "Sample flow".]
 
@@ -115,7 +135,7 @@ function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: str
 As páginas foram analisadas em [use o período da seção "Study period"].
 
 **Aspectos éticos.** Este estudo analisou informações de acesso público e não envolveu participantes humanos.`
-    : `**Page selection.** [To be completed by the authors: search strategy — search engine, search terms, date of the search, and how the URLs were selected.]
+    : `**${pageSelection(topic, locale).label}.** ${pageSelection(topic, locale).text}
 
 **Eligibility.** Web pages with written text were included. Before any evaluation, URLs were screened automatically and excluded when they were social media posts (Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn posts, Pinterest, Reddit, Kwai, Telegram, WhatsApp; LinkedIn Pulse articles were accepted as long-form written publications), video platforms or video-only pages, or PDF files, as these formats fall outside the scope of the DISCERN instrument. Pages that blocked automated access, returned an HTTP error, or yielded fewer than 500 characters of text were also excluded. [Report the sample flow with the numbers from the "Sample flow" section.]
 
@@ -155,7 +175,7 @@ ${analysisData}
 8.  **Tabelas e figuras.** Não crie tabelas nem figuras. O sistema acrescenta a ${pt ? 'Tabela 1' : 'Table 1'} (média ± desvio padrão por questão e por domínio) ao final; refira-se a ela no texto dos resultados.
 9.  **Tom.** Formal, acadêmico e objetivo. Não descreva a avaliação por modelos de linguagem como "imparcial", "objetiva" ou "sem viés"; diga que ela é padronizada e reprodutível.
 10. **Limitações obrigatórias na discussão:** o DISCERN foi desenvolvido para avaliadores humanos e os modelos de linguagem não substituem esse julgamento; o tamanho da amostra; a análise retrata um momento específico; a seleção das páginas depende da estratégia de busca descrita nos métodos.
-11. **Métodos.** Copie o texto fixo dos métodos como está, só preenchendo os trechos entre colchetes indicados. Não coloque resultados (ICC, divergências, notas) nos métodos; eles vão nos resultados.
+11. **Métodos.** Copie o texto fixo dos métodos como está, só preenchendo os trechos entre colchetes que pedem o fluxo da amostra, o painel ou o período da análise. O colchete final de "Seleção das páginas"/"Page selection" fica exatamente como está: não escreva o número de páginas nem a data da busca. O período em "Study period" é o da análise, não o da busca. Não coloque resultados (ICC, divergências, notas) nos métodos; eles vão nos resultados.
 12. **Comparação entre sites.** Para dizer qual site teve a maior ou a menor nota num domínio, use a seção "Websites ranked by domain".
 13. **Formato.** Markdown. Títulos de seção com "#". Separe as seções com uma linha contendo apenas "---".
 
@@ -257,9 +277,10 @@ export async function createScientificArticle(input: CreateScientificArticleInpu
 
   if (!output?.articleContent) throw new Error('The model returned no article.');
 
+  const article = keepPageSelection(output.articleContent, topic, input.locale);
   const table = buildScoresTable(input.items, input.locale);
   const tablesHeading = input.locale === 'pt-BR' ? 'Tabelas' : 'Tables';
   return {
-    articleContent: table ? `${output.articleContent.trim()}\n\n---\n\n# ${tablesHeading}\n\n${table}\n` : output.articleContent,
+    articleContent: table ? `${article.trim()}\n\n---\n\n# ${tablesHeading}\n\n${table}\n` : article,
   };
 }

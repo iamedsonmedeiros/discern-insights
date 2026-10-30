@@ -29,7 +29,7 @@ The application is built with a modern web stack, leveraging Next.js for the fro
     *   The ability to start, pause, and continue the analysis queue.
 *   **Internationalization (i18n)**: The entire user interface and AI analysis output are available in both **English (en)** and **Brazilian Portuguese (pt-BR)**.
 *   **Data Export**: Export results to `CSV`, `JSON`, or `DOCX` (well-formatted scientific report).
-*   **Scientific Article Generation**: A draft original article (IMRaD) about the topic the user types, written by Gemini 2.5 Flash in the interface language. Every number, the study period and Table 1 are computed by the system; the Methods text and the reference list are fixed, and authorship, search strategy, acknowledgments and conflicts of interest are left as "to be completed" fields. The draft includes an AI-use statement and must be reviewed by the authors.
+*   **Scientific Article Generation**: A draft original article (IMRaD) about the topic the user types, written by Gemini 2.5 Flash in the interface language. Every number, the study period and Table 1 are computed by the system; the Methods text and the reference list are fixed. Page selection describes the Google results collection (google.com.br, Brazilian Portuguese, Brazil, no account or personalization, items recorded in display order). The number of result pages, the search date, authorship, acknowledgments and conflicts of interest stay as "to be completed" fields. The draft includes an AI-use statement and must be reviewed by the authors.
 
 ---
 
