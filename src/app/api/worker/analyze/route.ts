@@ -4,7 +4,7 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { analyzeWithEvaluator, type ModelRun } from "@/lib/content";
 import { persistModelResults } from "@/lib/model-results";
-import { recordItemOutcome } from "@/lib/jobs";
+import { copyScoreToLaterPositions, recordItemOutcome } from "@/lib/jobs";
 import { computeConsensus, type ModelScores } from "@/lib/consensus";
 import { createEvaluator, estimateCost, getPanel } from "@/ai/evaluators";
 import type { PerformDiscernAnalysisOutput } from "@/lib/types";
@@ -77,6 +77,7 @@ async function finalizeItem(
   }
 
   await recordItemOutcome(jobId, isCompleted);
+  await copyScoreToLaterPositions(itemId);
 
   return {
     finalized: true as const,

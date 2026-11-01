@@ -27,6 +27,14 @@ export type AnalysisItem = {
     title?: string;
     size?: number;
     httpStatus?: number;
+    /** Google results page (1-based) when the row came from the collector spreadsheet. */
+    searchPage?: number;
+    /** Overall position in the search, including non-organic blocks. */
+    searchPosition?: number;
+    /** Position within that results page. */
+    searchPositionOnPage?: number;
+    /** Set on a later position: the item that was actually analyzed. */
+    sameScoreAs?: string;
   };
   modelId?: string;
   inputTokens?: number;

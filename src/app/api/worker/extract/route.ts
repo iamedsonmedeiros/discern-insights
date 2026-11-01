@@ -3,7 +3,7 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { createAdminClient } from "@/lib/supabase-admin";
 import { extractContent, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
-import { recordItemOutcome } from "@/lib/jobs";
+import { copyScoreToLaterPositions, recordItemOutcome } from "@/lib/jobs";
 import { publish } from "@/lib/queue";
 import { getPanel } from "@/ai/evaluators";
 
@@ -43,7 +43,7 @@ async function handler(request: NextRequest) {
       .update({ status: "processing", updated_at: new Date().toISOString() })
       .eq("id", itemId)
       .eq("status", "pending")
-      .select("id, url")
+      .select("id, url, meta")
       .single();
 
     if (!item) {
@@ -60,12 +60,13 @@ async function handler(request: NextRequest) {
         .update({
           status: extraction.status,
           reason: extraction.reason,
-          meta: extraction.meta,
+          meta: { ...(item.meta ?? {}), ...extraction.meta },
           updated_at: new Date().toISOString(),
         })
         .eq("id", item.id);
 
       await recordItemOutcome(jobId, false);
+      await copyScoreToLaterPositions(item.id);
 
       return NextResponse.json({ status: extraction.status, itemId: item.id });
     }
@@ -86,7 +87,7 @@ async function handler(request: NextRequest) {
     await supabase
       .from("analysis_items")
       .update({
-        meta: extraction.meta,
+        meta: { ...(item.meta ?? {}), ...extraction.meta },
         content_snapshot: prepared.text,
         content_hash: contentHash,
         extraction_method: extraction.extractionMethod,
@@ -126,6 +127,7 @@ async function handler(request: NextRequest) {
           .eq("id", itemId);
 
         await recordItemOutcome(jobId, false);
+        await copyScoreToLaterPositions(itemId);
       } catch (e) {
         console.error("Failed to handle extract error gracefully:", e);
       }

@@ -4,6 +4,14 @@
 // and a repeated address enters once. Every other row is counted so the article
 // can say how many results were collected and how many were actually screened.
 
+export type SearchHit = {
+  url: string;
+  page: number | null;
+  /** posicao_geral: where the row sat in the search, organic or not. */
+  position: number | null;
+  positionOnPage: number | null;
+};
+
 export type SearchImport = {
   rows: number;
   byType: Record<string, number>;
@@ -105,7 +113,7 @@ export function collectionDay(value: string): string | null {
  * Returns null when the rows are not the collector spreadsheet, so the caller
  * can fall back to a plain URL list.
  */
-export function parseSearchRows(rows: string[][]): SearchImport & { urls: string[] } | null {
+export function parseSearchRows(rows: string[][]): (SearchImport & { hits: SearchHit[]; urls: string[] }) | null {
   const header = headerOf(rows);
   if (!header) return null;
 
@@ -118,6 +126,7 @@ export function parseSearchRows(rows: string[][]): SearchImport & { urls: string
   let pages = 0;
   let organicRows = 0;
   let dataRows = 0;
+  const hits: SearchHit[] = [];
   const urls: string[] = [];
   const seen = new Set<string>();
 
@@ -138,9 +147,19 @@ export function parseSearchRows(rows: string[][]): SearchImport & { urls: string
     if (tipo === "organico") {
       organicRows++;
       const url = cleanUrl(cell(row, "url"));
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        urls.push(url);
+      if (url) {
+        const position = Number(cell(row, "posicao_geral"));
+        const onPage = Number(cell(row, "posicao_pagina"));
+        hits.push({
+          url,
+          page: Number.isFinite(page) && page > 0 ? page : null,
+          position: Number.isFinite(position) && position > 0 ? position : null,
+          positionOnPage: Number.isFinite(onPage) && onPage > 0 ? onPage : null,
+        });
+        if (!seen.has(url)) {
+          seen.add(url);
+          urls.push(url);
+        }
       }
     } else {
       const sub = norm(cell(row, "subtipo")) || typeKey;
@@ -159,11 +178,12 @@ export function parseSearchRows(rows: string[][]): SearchImport & { urls: string
     term: terms.size === 1 ? [...terms][0] : terms.size > 1 ? [...terms].join("; ") : null,
     pages: pages || null,
     collectedOn: collected[0] ?? null,
+    hits,
     urls,
   };
 }
 
-export function parseSearchCsv(text: string): (SearchImport & { urls: string[] }) | null {
+export function parseSearchCsv(text: string): (SearchImport & { hits: SearchHit[]; urls: string[] }) | null {
   if (!text.trim()) return null;
   return parseSearchRows(parseCsv(text, delimiterOf(text)));
 }
@@ -243,14 +263,14 @@ export function describeSearchImports(imports: SearchImport[], locale: Locale): 
           when ? `em ${when}` : "",
           entry.term ? `para o termo "${entry.term}"` : "",
         ].filter(Boolean).join(", ");
-        return `A planilha de coleta registrou ${entry.rows} resultados${where ? ` ${where}` : ""}. Desses, ${entry.organicRows} eram resultados orgânicos, em ${entry.uniqueOrganic} endereços únicos, e somente esses endereços únicos entraram na triagem.${leftOutPhrase(entry, locale)}`;
+        return `A planilha de coleta registrou ${entry.rows} resultados${where ? ` ${where}` : ""}. Desses, ${entry.organicRows} eram resultados orgânicos (${entry.uniqueOrganic} endereços únicos), mantidos na ordem em que apareceram. Cada endereço é analisado só na primeira posição; quando volta a aparecer, a mesma nota é repetida e não entra de novo na média.${leftOutPhrase(entry, locale)}`;
       }
       const where = [
         entry.pages ? `across ${entry.pages} result pages` : "",
         when ? `on ${when}` : "",
         entry.term ? `for the query "${entry.term}"` : "",
       ].filter(Boolean).join(", ");
-      return `The collection spreadsheet recorded ${entry.rows} results${where ? ` ${where}` : ""}. Of these, ${entry.organicRows} were organic results, at ${entry.uniqueOrganic} unique addresses, and only those unique addresses were screened.${leftOutPhrase(entry, locale)}`;
+      return `The collection spreadsheet recorded ${entry.rows} results${where ? ` ${where}` : ""}. Of these, ${entry.organicRows} were organic results (${entry.uniqueOrganic} unique addresses), kept in the order they appeared. Each address is analyzed only at its first position; later positions repeat that score and are left out of the mean.${leftOutPhrase(entry, locale)}`;
     })
     .join(" ");
 }

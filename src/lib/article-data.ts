@@ -17,7 +17,7 @@ import type { AnalysisItem, AnalysisStatus, Consensus } from "@/lib/types";
 /** Fields the article needs; the client strips everything else to keep the payload small. */
 export type ArticleItem = Pick<
   AnalysisItem,
-  "url" | "status" | "meta" | "modelId" | "consensus" | "divergentItems" | "panelIncomplete" | "modelsTotal" | "updatedAt"
+  "url" | "status" | "meta" | "modelId" | "consensus" | "divergentItems" | "panelIncomplete" | "modelsTotal" | "updatedAt" | "index"
 > & {
   discernResult?: Pick<
     NonNullable<AnalysisItem["discernResult"]>,
@@ -29,6 +29,7 @@ export function toArticleItem(item: AnalysisItem): ArticleItem {
   const result = item.discernResult;
   return {
     url: item.url,
+    index: item.index,
     status: item.status,
     meta: item.meta ? { title: item.meta.title } : undefined,
     modelId: item.modelId,
@@ -128,9 +129,27 @@ function reliabilitySection(consensuses: Consensus[]): string[] {
  * (the validated Brazilian Portuguese wording for "pt-BR"), so the manuscript
  * quotes the instrument in the language it is written in.
  */
+/** The first time each address appears. Later positions repeat that score and must not weight the mean. */
+function firstPositions(items: ArticleItem[]): { kept: ArticleItem[]; repeated: number } {
+  const seen = new Set<string>();
+  const kept: ArticleItem[] = [];
+  let repeated = 0;
+  for (const item of [...items].sort((a, b) => a.index - b.index)) {
+    if (seen.has(item.url)) {
+      repeated++;
+      continue;
+    }
+    seen.add(item.url);
+    kept.push(item);
+  }
+  return { kept, repeated };
+}
+
 export function formatArticleData(items: ArticleItem[], locale: DiscernLocale = "en", search?: SearchImport[]): string {
-  const { included: reported, legacy } = includedItems(items);
+  const { kept, repeated } = firstPositions(items);
+  const { included: reported, legacy } = includedItems(kept);
   const included = reported.map((r) => r.item);
+  const screened = kept;
   const consensuses = included.map((item) => item.consensus).filter((c): c is Consensus => !!c);
   const question = (key: string) => discernLabel(key, locale);
 
@@ -155,10 +174,13 @@ export function formatArticleData(items: ArticleItem[], locale: DiscernLocale = 
     `- Websites analyzed in: ${studyPeriod(reported, locale)}`,
     "",
     "## Sample flow",
-    `- URLs screened: ${items.length}`,
+    `- URLs screened: ${screened.length}`,
   );
+  if (repeated > 0) {
+    lines.push(`- Later positions of an address already analyzed: ${repeated}. They show the first position's score and are excluded from the statistics below.`);
+  }
   for (const [status, label] of SAMPLE_FLOW) {
-    const count = status === "completed" ? included.length : items.filter((item) => item.status === status).length;
+    const count = status === "completed" ? included.length : screened.filter((item) => item.status === status).length;
     lines.push(`- ${label}: ${count}`);
   }
   if (legacy > 0) {

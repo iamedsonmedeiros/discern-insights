@@ -100,11 +100,17 @@ export async function POST(request: NextRequest) {
       // Non-fatal — continue
     }
 
-    // 4. Fan-out stage 1: one extraction message per URL. Each extractor then
-    //    fans out again, one analysis message per model — so the panel size does
-    //    not need to be known here beyond recording it on the job.
+    // One extraction per address. A URL that already appeared earlier keeps its
+    // row, in order, and receives that score when the first position finishes.
+    const seenUrl = new Set<string>();
+    const firstPositions = pendingItems.filter((item) => {
+      if (seenUrl.has(item.url)) return false;
+      seenUrl.add(item.url);
+      return true;
+    });
+
     await publish(
-      pendingItems.map((item, i) => ({
+      firstPositions.map((item, i) => ({
         path: "/api/worker/extract",
         body: { jobId: job.id, itemId: item.id },
         delaySeconds: Math.floor(i / PARALLEL_LIMIT) * STAGGER_DELAY_SECONDS,

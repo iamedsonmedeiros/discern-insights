@@ -267,7 +267,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     if (!isProcessingRef.current) return;
 
     // Find the next item that is 'pending'
-    const nextItem = itemsRef.current.find(item => item.status === 'pending');
+    const ordered = [...itemsRef.current].sort((a, b) => a.index - b.index);
+    const nextItem = ordered.find(item => item.status === 'pending');
 
     if (!nextItem) {
       // Check if all items are done (not pending and not processing)
@@ -276,6 +277,38 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
         setIsProcessing(false);
         showCompletionNotification();
       }
+      return;
+    }
+
+    const source = ordered.find(
+      (item) =>
+        item.url === nextItem.url &&
+        item.index < nextItem.index &&
+        item.status !== "pending" &&
+        item.status !== "processing"
+    );
+    if (source) {
+      const copied = {
+        ...nextItem,
+        status: source.status,
+        reason: source.reason,
+        discernResult: source.discernResult,
+        consensus: source.consensus,
+        divergenceFlag: source.divergenceFlag,
+        divergentItems: source.divergentItems,
+        panelIncomplete: source.panelIncomplete,
+        modelsTotal: source.modelsTotal,
+        contentSnapshot: source.contentSnapshot,
+        contentHash: source.contentHash,
+        extractionMethod: source.extractionMethod,
+        modelId: source.modelId,
+        meta: { ...source.meta, ...nextItem.meta, sameScoreAs: source.id },
+        updatedAt: new Date().toISOString(),
+      };
+      setItems((prev) => prev.map((item) => (item.id === nextItem.id ? copied : item)));
+      itemsRef.current = itemsRef.current.map((item) => (item.id === nextItem.id ? copied : item));
+      await upsertAnalysisItem(copied);
+      if (isProcessingRef.current && isAutoModeRef.current) processNextAvailable();
       return;
     }
 
@@ -297,7 +330,13 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
 
     try {
       const result = await processUrl(nextItem.url, locale, false, nextItem.id, selectedModelsRef.current);
-      const updatedItem = { ...nextItem, ...result, status: result.status, updatedAt: new Date().toISOString() };
+      const updatedItem = {
+        ...nextItem,
+        ...result,
+        meta: { ...nextItem.meta, ...result.meta },
+        status: result.status,
+        updatedAt: new Date().toISOString(),
+      };
       
       setItems((prev) =>
         prev.map((item) =>
@@ -331,7 +370,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const handlePasteImport = async () => {
     const parsed = parseSearchCsv(pasteContent);
     if (parsed) await importSpreadsheet(parsed);
-    else await importUrls(extractUrlsFromString(pasteContent));
+    else await importRows(extractUrlsFromString(pasteContent).map((url) => ({ url })));
     setPasteContent(""); // Clear the textarea after import
   };
 
@@ -358,17 +397,19 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
         await importSpreadsheet(parsed);
         return;
       }
-      await importUrls(extractUrlsFromString(text));
+      await importRows(extractUrlsFromString(text).map((url) => ({ url })));
     } catch (error) {
       toast({ title: t("import.sheetUnrecognized"), description: error instanceof Error ? error.message : String(error), variant: "destructive" });
     }
   };
 
-  const importUrls = async (urls: string[], options?: { silent?: boolean }) => {
+  const importRows = async (
+    rows: { url: string; index?: number; meta?: AnalysisItem["meta"] }[],
+    options?: { silent?: boolean }
+  ) => {
     const MAX_ITEMS = 200;
-    let newUrls = [...urls];
 
-    if (newUrls.length === 0) {
+    if (rows.length === 0) {
       return;
     }
 
@@ -383,19 +424,21 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       return;
     }
 
-    let importedCount = newUrls.length;
+    let entering = rows;
+    let importedCount = rows.length;
     let partialImport = false;
 
-    if (newUrls.length > availableSlots) {
-      newUrls = newUrls.slice(0, availableSlots);
+    if (rows.length > availableSlots) {
+      entering = rows.slice(0, availableSlots);
       importedCount = availableSlots;
       partialImport = true;
     }
 
-    const newItems: AnalysisItem[] = newUrls.map((url, index) => ({
+    const newItems: AnalysisItem[] = entering.map((row, index) => ({
       id: uuidv4(),
-      index: items.length + index + 1,
-      url,
+      index: row.index ?? items.length + index + 1,
+      url: row.url,
+      meta: row.meta,
       status: "pending",
       updatedAt: new Date().toISOString(),
     }));
@@ -404,7 +447,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
 
     setIsImporting(true);
     try {
-      await saveImportedUrls(newItems.map(item => ({ id: item.id, url: item.url, index: item.index })));
+      await saveImportedUrls(newItems.map(item => ({ id: item.id, url: item.url, index: item.index, meta: item.meta })));
 
       if (partialImport) {
         toast({
@@ -426,20 +469,27 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     }
   };
 
-  const importSpreadsheet = async (parsed: SearchImport & { urls: string[] }) => {
-    const { urls, ...summary } = parsed;
-    const known = new Set(items.map((item) => item.url));
-    const fresh = urls.filter((url) => !known.has(url));
-    const room = Math.max(0, 200 - items.length);
-    const entering = fresh.slice(0, room);
-    if (entering.length > 0) {
-      await importUrls(entering, { silent: true });
+  const importSpreadsheet = async (parsed: SearchImport & { hits: { url: string; page: number | null; position: number | null; positionOnPage: number | null }[] }) => {
+    const { hits, ...summary } = parsed;
+    const known = new Set(items.map((item) => `${item.url}#${item.meta?.searchPosition ?? item.index}`));
+    const fresh = hits.filter((hit) => !known.has(`${hit.url}#${hit.position ?? "x"}`));
+    if (fresh.length > 0) {
+      const start = items.length;
+      await importRows(fresh.map((hit, i) => ({
+        url: hit.url,
+        index: hit.position ?? start + i + 1,
+        meta: {
+          ...(hit.page != null ? { searchPage: hit.page } : {}),
+          ...(hit.position != null ? { searchPosition: hit.position } : {}),
+          ...(hit.positionOnPage != null ? { searchPositionOnPage: hit.positionOnPage } : {}),
+        },
+      })), { silent: true });
       setSearchImports(rememberSearchImport(summary));
     }
     const leftOut = summary.rows - summary.organicRows;
     toast({
-      title: entering.length > 0 ? t("import.sheetTitle") : t("import.sheetEmpty"),
-      description: t("import.sheetBody", { rows: summary.rows, unique: entering.length, organic: summary.organicRows, leftOut }),
+      title: fresh.length > 0 ? t("import.sheetTitle") : t("import.sheetEmpty"),
+      description: t("import.sheetBody", { rows: summary.rows, queued: Math.min(fresh.length, Math.max(0, 200 - items.length)), unique: summary.uniqueOrganic, leftOut }),
     });
   };
 

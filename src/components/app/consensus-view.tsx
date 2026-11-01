@@ -46,7 +46,7 @@ export function ConsensusView({
     setExpanded(null);
     if (!consensus) return;
     setLoading(true);
-    fetchModelResults(item.id)
+    fetchModelResults(item.meta?.sameScoreAs ?? item.id)
       .then((data) => !cancelled && setRows(data))
       .finally(() => !cancelled && setLoading(false));
     return () => {

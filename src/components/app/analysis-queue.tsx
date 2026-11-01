@@ -128,7 +128,12 @@ export function AnalysisQueue({ items, activeItemId, onRowClick }: AnalysisQueue
                     onClick={() => onRowClick(item.id)}
                     className={cn("cursor-pointer", item.id === activeItemId && "bg-accent")}
                   >
-                    <TableCell>{item.index}</TableCell>
+                    <TableCell>
+                      {item.index}
+                      {item.meta?.searchPage != null && (
+                        <div className="text-[10px] leading-tight text-muted-foreground">p.{item.meta.searchPage}</div>
+                      )}
+                    </TableCell>
                     <TableCell className="max-w-[250px] truncate">{item.url}</TableCell>
                     <TableCell>
                       <StatusBadge item={item} label={t(statusConfig[item.status].textKey)} />

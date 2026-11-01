@@ -3,7 +3,7 @@
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { ArticleItem } from "@/lib/article-data";
 import type { DiscernLocale } from "@/lib/discern-items";
-import { parseSearchRows, type SearchImport } from "@/lib/search-import";
+import { parseSearchRows, type SearchHit, type SearchImport } from "@/lib/search-import";
 import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
 import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
@@ -268,7 +268,7 @@ export async function resetProcessingStatus() {
   }
 }
 
-export async function saveImportedUrls(items: { id: string, url: string, index: number }[]) {
+export async function saveImportedUrls(items: { id: string, url: string, index: number, meta?: AnalysisItem["meta"] }[]) {
   const { supabase, user } = await getAuthenticatedUser();
 
   const itemsToInsert = items.map(item => ({
@@ -277,7 +277,8 @@ export async function saveImportedUrls(items: { id: string, url: string, index: 
     index: item.index,
     status: 'pending',
     user_id: user.id,
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    ...(item.meta ? { meta: item.meta } : {}),
   }));
 
   const { data, error } = await supabase
@@ -507,7 +508,7 @@ export async function startManualAnalysis(params: {
 
 
 /** Reads the Chrome collector workbook and returns the organic addresses plus the counts. */
-export async function parseSearchWorkbook(fileBase64: string): Promise<(SearchImport & { urls: string[] }) | null> {
+export async function parseSearchWorkbook(fileBase64: string): Promise<(SearchImport & { hits: SearchHit[]; urls: string[] }) | null> {
   await getAuthenticatedUser();
   const XLSX = await import("xlsx");
   const book = XLSX.read(Buffer.from(fileBase64, "base64"), { type: "buffer" });

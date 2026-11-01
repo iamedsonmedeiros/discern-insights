@@ -66,3 +66,50 @@ export async function recordItemOutcome(
 
   return counters[0] as JobCounters;
 }
+
+/**
+ * A later row of the same address is not analyzed again. Once the first position
+ * reaches a final status, every still-pending later position receives that score.
+ * Each copied row counts as one finished item of its job.
+ */
+export async function copyScoreToLaterPositions(sourceId: string): Promise<void> {
+  const supabase = createAdminClient();
+  const { data: source } = await supabase.from("analysis_items").select("*").eq("id", sourceId).maybeSingle();
+  if (!source || source.status === "pending" || source.status === "processing") return;
+
+  const { data: later } = await supabase
+    .from("analysis_items")
+    .select("id, meta, job_id")
+    .eq("user_id", source.user_id)
+    .eq("url", source.url)
+    .eq("status", "pending")
+    .gt("index", source.index);
+
+  for (const row of later ?? []) {
+    const meta = { ...(source.meta ?? {}), ...(row.meta ?? {}), sameScoreAs: source.id };
+    const { data: claimed } = await supabase
+      .from("analysis_items")
+      .update({
+        status: source.status,
+        reason: source.reason,
+        discern_result: source.discern_result,
+        consensus: source.consensus,
+        divergence_flag: source.divergence_flag,
+        divergent_items: source.divergent_items,
+        panel_incomplete: source.panel_incomplete,
+        models_total: source.models_total,
+        content_snapshot: source.content_snapshot,
+        content_hash: source.content_hash,
+        extraction_method: source.extraction_method,
+        model_id: source.model_id,
+        meta,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.id)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+
+    if (claimed && row.job_id) await recordItemOutcome(row.job_id, source.status === "completed");
+  }
+}
