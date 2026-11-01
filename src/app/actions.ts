@@ -66,6 +66,7 @@ export async function fetchAnalysisItems(options?: { jobId?: string, onlyUnassig
       divergentItems: item.divergent_items,
       panelIncomplete: item.panel_incomplete,
       modelsTotal: item.models_total,
+      modelId: item.model_id,
     }));
   } catch (e) {
     console.error("fetchAnalysisItems failed:", e);
@@ -79,6 +80,9 @@ export type JobProgress = {
   completed: number;
   failed: number;
   total: number;
+  keyword?: string;
+  models?: string[];
+  createdAt?: string;
 };
 
 function toJobProgress(row: {
@@ -87,6 +91,9 @@ function toJobProgress(row: {
   completed_urls: number | null;
   failed_urls: number | null;
   total_urls: number | null;
+  keyword?: string | null;
+  models?: string[] | null;
+  created_at?: string | null;
 }): JobProgress {
   return {
     id: row.id,
@@ -94,6 +101,9 @@ function toJobProgress(row: {
     completed: row.completed_urls ?? 0,
     failed: row.failed_urls ?? 0,
     total: row.total_urls ?? 0,
+    keyword: row.keyword ?? undefined,
+    models: row.models ?? undefined,
+    createdAt: row.created_at ?? undefined,
   };
 }
 
@@ -103,7 +113,7 @@ export async function fetchActiveJob(): Promise<JobProgress | null> {
     const { supabase, user } = await getAuthenticatedUser();
     const { data, error } = await supabase
       .from("analysis_jobs")
-      .select("id, status, completed_urls, failed_urls, total_urls")
+      .select("id, status, completed_urls, failed_urls, total_urls, keyword, models, created_at")
       .eq("user_id", user.id)
       .eq("status", "processing")
       .order("created_at", { ascending: false })
@@ -123,7 +133,7 @@ export async function fetchJobProgress(jobId: string): Promise<JobProgress | nul
     const { supabase, user } = await getAuthenticatedUser();
     const { data, error } = await supabase
       .from("analysis_jobs")
-      .select("id, status, completed_urls, failed_urls, total_urls")
+      .select("id, status, completed_urls, failed_urls, total_urls, keyword, models, created_at")
       .eq("id", jobId)
       .eq("user_id", user.id)
       .maybeSingle();
@@ -622,6 +632,118 @@ async function queueManualAnalysis(params: {
   return { jobId, models: modelIds };
 }
 
+
+/**
+ * Adds models to a finished batch. Pages that already have text are scored by the
+ * new models only; the scores already stored stay. Consensus appears when a page
+ * has two models.
+ */
+export async function expandJobPanel(
+  jobId: string,
+  modelIds: string[]
+): Promise<{ queued: number; models: string[] } | { error: string }> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+    const allowed = new Set(getAvailableModels().map((model) => model.id));
+    const requested = modelIds.filter((id) => allowed.has(id));
+    if (requested.length === 0) return { error: "Escolha ao menos um modelo." };
+
+    const { data: job } = await supabase
+      .from("analysis_jobs")
+      .select("id, models, status")
+      .eq("id", jobId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (!job) return { error: "Histórico não encontrado." };
+    if (job.status === "processing") return { error: "Este histórico ainda está em processamento." };
+
+    const current = (job.models as string[] | null) ?? [];
+    const panel = Array.from(new Set([...current, ...requested]));
+    const added = panel.filter((id) => !current.includes(id));
+    if (added.length === 0) return { error: "Estes modelos já fazem parte desta análise." };
+
+    const admin = createAdminClient();
+    const { data: items, error: itemsError } = await admin
+      .from("analysis_items")
+      .select("id, url, index, status, content_snapshot, meta")
+      .eq("job_id", jobId)
+      .eq("user_id", user.id);
+    if (itemsError) return { error: itemsError.message };
+
+    const firstByUrl = new Map<string, NonNullable<typeof items>[number]>();
+    for (const item of [...(items ?? [])].sort((a, b) => a.index - b.index)) {
+      const meta = item.meta as { sameScoreAs?: string } | null;
+      if (item.status !== "completed" || !item.content_snapshot || meta?.sameScoreAs) continue;
+      if (!firstByUrl.has(item.url)) firstByUrl.set(item.url, item);
+    }
+    const targets = [...firstByUrl.values()];
+
+    const present = new Map<string, Set<string>>();
+    const targetIds = targets.map((item) => item.id);
+    for (let i = 0; i < targetIds.length; i += 80) {
+      const { data: rows, error } = await admin
+        .from("analysis_model_results")
+        .select("item_id, model_id")
+        .in("item_id", targetIds.slice(i, i + 80));
+      if (error) return { error: error.message };
+      for (const row of rows ?? []) {
+        const set = present.get(row.item_id) ?? new Set<string>();
+        set.add(row.model_id);
+        present.set(row.item_id, set);
+      }
+    }
+
+    const messages: { path: string; body: Record<string, unknown>; delaySeconds?: number }[] = [];
+    let queued = 0;
+    for (const item of targets) {
+      const missing = panel.filter((id) => !present.get(item.id)?.has(id));
+      if (missing.length === 0) continue;
+      const meta = { ...((item.meta as Record<string, unknown> | null) ?? {}), priorStatus: item.status };
+      const { data: claimed, error } = await admin
+        .from("analysis_items")
+        .update({
+          status: "processing",
+          models_total: panel.length,
+          meta,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", item.id)
+        .eq("status", "completed")
+        .select("id")
+        .maybeSingle();
+      if (error || !claimed) continue;
+      queued += 1;
+      for (const modelId of missing) {
+        messages.push({ path: "/api/worker/analyze", body: { jobId, itemId: item.id, modelId } });
+      }
+      messages.push({
+        path: "/api/worker/reconcile",
+        body: { jobId, itemId: item.id },
+        delaySeconds: RECONCILE_DELAY_SECONDS,
+      });
+    }
+
+    const { error: jobError } = await admin
+      .from("analysis_jobs")
+      .update({
+        models: panel,
+        status: queued > 0 ? "processing" : job.status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+    if (jobError) return { error: jobError.message };
+
+    for (let i = 0; i < messages.length; i += 80) {
+      await publish(messages.slice(i, i + 80));
+    }
+
+    return { queued, models: panel };
+  } catch (error) {
+    console.error("expandJobPanel failed:", error);
+    const message = error instanceof Error ? error.message : "Não foi possível incluir os modelos.";
+    return { error: message };
+  }
+}
 
 /** Reads the Chrome collector workbook and returns the organic addresses plus the counts. */
 export async function parseSearchWorkbook(fileBase64: string): Promise<(SearchImport & { hits: SearchHit[]; urls: string[] }) | null> {

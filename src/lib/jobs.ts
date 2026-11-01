@@ -115,6 +115,38 @@ export async function copyScoreToLaterPositions(sourceId: string): Promise<void>
 
     if (claimed && row.job_id) await recordItemOutcome(row.job_id, source.status === "completed");
   }
+
+  // A rescore of the first position has to reach the rows that already show its score.
+  const { data: copies } = await supabase
+    .from("analysis_items")
+    .select("id, meta, status")
+    .eq("user_id", source.user_id)
+    .eq("url", source.url)
+    .gt("index", source.index);
+
+  for (const row of copies ?? []) {
+    const meta = row.meta as { sameScoreAs?: string } | null;
+    if (meta?.sameScoreAs !== source.id || row.status === "pending" || row.status === "processing") continue;
+    await supabase
+      .from("analysis_items")
+      .update({
+        status: source.status,
+        reason: source.reason,
+        discern_result: source.discern_result,
+        consensus: source.consensus,
+        divergence_flag: source.divergence_flag,
+        divergent_items: source.divergent_items,
+        panel_incomplete: source.panel_incomplete,
+        models_total: source.models_total,
+        content_snapshot: source.content_snapshot,
+        content_hash: source.content_hash,
+        extraction_method: source.extraction_method,
+        model_id: source.model_id,
+        meta: { ...(source.meta ?? {}), ...(row.meta ?? {}), sameScoreAs: source.id },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.id);
+  }
 }
 
 const COUNTED_FAILURE = new Set([
@@ -195,6 +227,8 @@ export async function finalizeReportedModels(jobId: string, itemId: string) {
     await recordItemOutcome(jobId, isCompleted);
   } else if (COUNTED_FAILURE.has(priorStatus) && isCompleted) {
     await convertFailureToSuccess(jobId);
+  } else if (priorStatus === "completed") {
+    await closeJobFromItemStatuses(jobId, false);
   }
   await copyScoreToLaterPositions(itemId);
 
@@ -246,7 +280,7 @@ export async function reconcileStalledItem(jobId: string, itemId: string) {
  * the job when none are still open. Used when a counted row was moved off the
  * job and the increment total can no longer reach total_urls.
  */
-export async function closeJobFromItemStatuses(jobId: string): Promise<boolean> {
+export async function closeJobFromItemStatuses(jobId: string, notify = true): Promise<boolean> {
   const supabase = createAdminClient();
   const { data: items } = await supabase.from("analysis_items").select("status").eq("job_id", jobId);
   if (!items?.length) return false;
@@ -268,7 +302,7 @@ export async function closeJobFromItemStatuses(jobId: string): Promise<boolean> 
     .select("user_email")
     .maybeSingle();
 
-  if (closed?.user_email) {
+  if (notify && closed?.user_email) {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:9002";
     await sendCompletionEmail(closed.user_email, {
       totalUrls: items.length,

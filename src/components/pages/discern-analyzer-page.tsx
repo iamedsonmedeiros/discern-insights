@@ -4,7 +4,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook, fetchActiveJob, fetchJobProgress } from "@/app/actions";
+import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook, fetchActiveJob, fetchJobProgress, expandJobPanel, type JobProgress } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
 import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
@@ -73,6 +73,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const [backgroundJobStatus, setBackgroundJobStatus] = useState<string | null>(null);
   const [backgroundProgress, setBackgroundProgress] = useState<{ completed: number; failed: number; total: number } | null>(null);
+  const [viewedSession, setViewedSession] = useState<JobProgress | null>(null);
+  const [expandingPanel, setExpandingPanel] = useState(false);
 
   useEffect(() => {
     setSearchImports(loadSearchImports());
@@ -82,10 +84,10 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     fetchAvailableModels()
       .then((models) => {
         setAvailableModels(models);
-        setSelectedModels(models.map((m) => m.id)); // default: all on
+        if (!initialJobId) setSelectedModels(models.map((m) => m.id));
       })
       .catch((e) => console.error("Failed to load available models:", e));
-  }, []);
+  }, [initialJobId]);
 
   useEffect(() => {
     isProcessingRef.current = isProcessing;
@@ -106,11 +108,17 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
         const job = await fetchJobProgress(initialJobId);
         setBackgroundJobId(initialJobId);
         if (job) {
+          const fromItems = Array.from(new Set(savedItems.flatMap((item) => item.consensus?.models ?? (item.modelId ? [item.modelId] : []))));
+          const models = job.models?.length ? job.models : fromItems;
+          const session = { ...job, models };
+          setViewedSession(session);
+          setSelectedModels(models);
           setBackgroundJobStatus(job.status);
           setBackgroundProgress({ completed: job.completed, failed: job.failed, total: job.total });
         }
         return;
       }
+      setViewedSession(null);
 
       const job = await fetchActiveJob();
       if (job) {
@@ -772,6 +780,45 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     }
   };
 
+  const handleExpandPanel = async (modelIds: string[]) => {
+    if (!viewedSession) return;
+    const names = modelIds.map((id) => availableModels.find((model) => model.id === id)?.displayName ?? id).join(", ");
+    if (!window.confirm(t("reliability.addConfirm", { models: names }))) return;
+    setExpandingPanel(true);
+    try {
+      const result = await expandJobPanel(viewedSession.id, modelIds);
+      if ("error" in result) {
+        toast({ title: t("manualAnalysis.errorTitle"), description: result.error, variant: "destructive" });
+        return;
+      }
+      setViewedSession((prev) => (prev ? { ...prev, models: result.models, status: result.queued > 0 ? "processing" : prev.status } : prev));
+      setSelectedModels(result.models);
+      if (result.queued > 0) {
+        setBackgroundJobId(viewedSession.id);
+        setBackgroundJobStatus("processing");
+        toast({ title: t("reliability.addQueued", { count: result.queued, models: names }) });
+      } else {
+        toast({ title: t("reliability.addNone") });
+      }
+    } finally {
+      setExpandingPanel(false);
+    }
+  };
+
+  const exportBase = (part: string) => {
+    const label = viewedSession?.keyword || keyword;
+    const base = (label || "analise")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 48) || "analise";
+    return `${base}-${part}`;
+  };
+
+  const consensusReady = processedItems.some((item) => item.consensus) && (viewedSession?.models?.length ?? 2) >= 2;
+
   const getStartButtonText = () => {
     const hasCompleted = items.some(i => i.status === 'completed');
     if (hasCompleted && !isProcessing) return t('controls.continue');
@@ -781,6 +828,37 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   return (
     <div className="flex flex-col font-sans">
       <main className="flex-grow container mx-auto p-4 pt-8">
+        {viewedSession && (
+          <div className="mb-6 flex items-start justify-between gap-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-blue-700">{t("history.viewing")}</p>
+              <h2 className="text-lg font-semibold text-slate-900">{viewedSession.keyword || t("history.untitled")}</h2>
+              <p className="text-sm text-slate-600">
+                {viewedSession.createdAt
+                  ? new Date(viewedSession.createdAt).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" })
+                  : ""}
+                {viewedSession.createdAt ? " · " : ""}
+                {t("history.scored", { count: viewedSession.completed })}
+                {" · "}
+                {t("history.excluded", { count: viewedSession.failed })}
+              </p>
+              {!!viewedSession.models?.length && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {viewedSession.models.map((id) => (
+                    <span key={id} className="rounded-full border border-blue-200 bg-white px-2.5 py-0.5 text-xs text-slate-700">
+                      {availableModels.find((model) => model.id === id)?.displayName ?? id.split("/").pop()}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            {onClearJobId && (
+              <Button variant="ghost" size="sm" onClick={onClearJobId} className="shrink-0 text-xs">
+                {t("history.back")}
+              </Button>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 flex flex-col gap-8">
             <Card>
@@ -835,18 +913,6 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                 <CardDescription>{t('controls.description')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {initialJobId && (
-                  <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg border border-blue-100 mb-4">
-                    <div className="text-sm text-blue-800">
-                      Visualizando sessão do histórico.
-                    </div>
-                    {onClearJobId && (
-                      <Button variant="ghost" size="sm" onClick={onClearJobId} className="h-6 x-2 text-xs">
-                        Voltar à Fila Atual
-                      </Button>
-                    )}
-                  </div>
-                )}
                 <div className="flex items-center justify-between">
                   <Label htmlFor="auto-mode" className="flex flex-col space-y-1">
                     <span>{t('controls.autoMode')}</span>
@@ -942,7 +1008,10 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                           ? "Concluído!"
                           : "Enviar para servidor"}
                   </Button>
-                  {backgroundProgress && backgroundJobStatus === 'processing' && (
+                  {viewedSession && backgroundProgress && backgroundJobStatus === 'processing' && backgroundProgress.completed + backgroundProgress.failed >= backgroundProgress.total && (
+                    <p className="text-xs text-muted-foreground">{t("reliability.adding")}</p>
+                  )}
+                  {backgroundProgress && backgroundJobStatus === 'processing' && (!viewedSession || backgroundProgress.completed + backgroundProgress.failed < backgroundProgress.total) && (
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>{backgroundProgress.completed + backgroundProgress.failed} de {backgroundProgress.total} processadas</span>
@@ -960,7 +1029,13 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
               </CardContent>
             </Card>
 
-            <ReliabilityCard items={processedItems} />
+            <ReliabilityCard
+              items={processedItems}
+              sessionModels={viewedSession?.models}
+              modelChoices={availableModels}
+              expanding={expandingPanel}
+              onExpand={handleExpandPanel}
+            />
 
             <Card>
               <CardHeader>
@@ -968,24 +1043,27 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                 <CardDescription>{t('export.description')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
-                <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
-                <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, 'discern_analysis_results')} disabled={processedItems.length === 0}>{t('export.json')}</Button>
-                <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, 'discern_analysis_results', fetchModelResults)} disabled={processedItems.length === 0}>
+                <Button variant="outline" className="w-full" onClick={() => exportCsv(processedItems, exportBase("resultados"))} disabled={processedItems.length === 0}>{t('export.csv')}</Button>
+                <Button variant="outline" className="w-full" onClick={() => exportJson(processedItems, exportBase("resultados"))} disabled={processedItems.length === 0}>{t('export.json')}</Button>
+                <Button variant="outline" className="w-full" onClick={() => exportDocx(processedItems, exportBase("relatorio"), fetchModelResults)} disabled={processedItems.length === 0}>
                   <FileText className="mr-2 h-4 w-4" />
                   {t('export.docx')}
                 </Button>
-                <Button variant="outline" className="w-full" onClick={() => exportScoreSheetCsv(processedItems, 'discern_scores_matrix')} disabled={processedItems.length === 0}>
+                <Button variant="outline" className="w-full" onClick={() => exportScoreSheetCsv(processedItems, exportBase("matriz"))} disabled={processedItems.length === 0}>
                   {t('export.scores') || 'Planilha de Scores (Matriz)'}
                 </Button>
                 <Button
                   variant="outline"
                   className="w-full"
-                  onClick={() => exportConsensusCsv(processedItems, 'discern_consensus_long')}
-                  disabled={!processedItems.some(i => i.consensus)}
+                  onClick={() => exportConsensusCsv(processedItems, exportBase("consenso"))}
+                  disabled={!consensusReady}
                 >
                   <Users2 className="mr-2 h-4 w-4" />
                   {t('export.consensusCsv')}
                 </Button>
+                {viewedSession?.models?.length === 1 && (
+                  <p className="text-xs text-muted-foreground">{t("export.consensusNeedsPanel")}</p>
+                )}
                 <Button variant="default" className="w-full" onClick={handleOpenArticleDialog} disabled={completedItems.length === 0 || isGeneratingArticle}>
                   {isGeneratingArticle ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
