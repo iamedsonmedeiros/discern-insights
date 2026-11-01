@@ -3,7 +3,7 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { createAdminClient } from "@/lib/supabase-admin";
 import { extractContent, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
-import { copyScoreToLaterPositions, recordItemOutcome } from "@/lib/jobs";
+import { copyScoreToLaterPositions, RECONCILE_DELAY_SECONDS, recordItemOutcome } from "@/lib/jobs";
 import { publish } from "@/lib/queue";
 import { getPanel } from "@/ai/evaluators";
 
@@ -97,12 +97,17 @@ async function handler(request: NextRequest) {
       .eq("id", item.id);
 
     // --- Stage 2 fan-out: one worker per model, all reading the same snapshot ---
-    await publish(
-      panel.map((evaluator) => ({
+    await publish([
+      ...panel.map((evaluator) => ({
         path: "/api/worker/analyze",
         body: { jobId, itemId: item.id, modelId: evaluator.id },
-      }))
-    );
+      })),
+      {
+        path: "/api/worker/reconcile",
+        body: { jobId, itemId: item.id },
+        delaySeconds: RECONCILE_DELAY_SECONDS,
+      },
+    ]);
 
     return NextResponse.json({
       status: "extracted",

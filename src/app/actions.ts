@@ -6,11 +6,13 @@ import type { DiscernLocale } from "@/lib/discern-items";
 import { parseSearchRows, type SearchHit, type SearchImport } from "@/lib/search-import";
 import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
-import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
+import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash, pageSourceToText, textFromPdf } from "@/lib/content";
 import { persistModelResults } from "@/lib/model-results";
 import { computeConsensus } from "@/lib/consensus";
 import { getPanel, getAvailableModels, estimateCost, GEMINI_EVALUATOR_ID } from "@/ai/evaluators";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { RECONCILE_DELAY_SECONDS } from "@/lib/jobs";
+import { MIN_TEXT_LENGTH } from "@/lib/eligibility";
 import { publish } from "@/lib/queue";
 // Reverted pdf-parse
 
@@ -478,30 +480,52 @@ export async function processUrl(
 }
 
 /**
- * Scores pasted text with the same models the user enabled for the automatic
- * panel. The text is frozen as the snapshot and each model runs in its own
- * worker, exactly like a URL that was extracted. Returns once the workers are
- * queued; the item moves to `processing` and finishes via the usual job path.
+ * Scores text the user supplied for one queue row, with the same panel as an
+ * extracted URL. The row stays on its job. A page that already counted (a
+ * scrape failure, for example) is not counted a second time.
  */
 export async function startManualAnalysis(params: {
   itemId: string;
-  text: string;
+  source: "text" | "html" | "pdf";
+  text?: string;
+  pdfBase64?: string;
   language?: string;
   modelIds?: string[];
 }): Promise<{ jobId: string; models: string[] }> {
   const { supabase, user } = await getAuthenticatedUser();
 
-  const text = params.text.trim();
-  if (!text) throw new Error("Cole o texto do artigo antes de analisar.");
-
   const { data: owned, error: ownedError } = await supabase
     .from("analysis_items")
-    .select("id")
+    .select("id, job_id, status, meta")
     .eq("id", params.itemId)
     .eq("user_id", user.id)
     .single();
 
   if (ownedError || !owned) throw new Error("Item não encontrado.");
+
+  let text = "";
+  if (params.source === "pdf") {
+    const raw = params.pdfBase64?.trim() ?? "";
+    if (!raw) throw new Error("Anexe um PDF antes de analisar.");
+    const bytes = Buffer.from(raw, "base64");
+    text = (await textFromPdf(bytes)).replace(/\s+/g, " ").trim();
+    if (text.length < MIN_TEXT_LENGTH) {
+      throw new Error(`O PDF tem texto insuficiente (${text.length} caracteres). Salve a página como PDF com o texto selecionável, não como imagem.`);
+    }
+  } else if (params.source === "html") {
+    const raw = params.text?.trim() ?? "";
+    if (!raw) throw new Error("Cole o código-fonte da página antes de analisar.");
+    text = pageSourceToText(raw);
+    if (text.length < MIN_TEXT_LENGTH) {
+      throw new Error(`Depois de tirar o código, sobraram ${text.length} caracteres. Cole o código-fonte completo da página.`);
+    }
+  } else {
+    text = params.text?.trim() ?? "";
+    if (!text) throw new Error("Cole o texto do artigo antes de analisar.");
+    if (text.length < MIN_TEXT_LENGTH) {
+      throw new Error(`O texto tem ${text.length} caracteres. Cole o artigo completo.`);
+    }
+  }
 
   const allowed = getAvailableModels().map((model) => model.id);
   const requested = (params.modelIds ?? []).filter((id) => allowed.includes(id));
@@ -512,23 +536,26 @@ export async function startManualAnalysis(params: {
   const prepared = await prepareTextForAnalysis(text, language);
   const modelIds = panel.map((evaluator) => evaluator.id);
 
-  const { data: job, error: jobError } = await supabase
-    .from("analysis_jobs")
-    .insert({
-      user_id: user.id,
-      user_email: user.email,
-      total_urls: 1,
-      completed_urls: 0,
-      failed_urls: 0,
-      status: "processing",
-      language,
-      keyword: "Análise manual",
-      models: modelIds,
-    })
-    .select()
-    .single();
-
-  if (jobError || !job) throw new Error("Não foi possível iniciar a análise manual.");
+  let jobId = owned.job_id as string | null;
+  if (!jobId) {
+    const { data: job, error: jobError } = await supabase
+      .from("analysis_jobs")
+      .insert({
+        user_id: user.id,
+        user_email: user.email,
+        total_urls: 1,
+        completed_urls: 0,
+        failed_urls: 0,
+        status: "processing",
+        language,
+        keyword: "Análise manual",
+        models: modelIds,
+      })
+      .select()
+      .single();
+    if (jobError || !job) throw new Error("Não foi possível iniciar a análise manual.");
+    jobId = job.id;
+  }
 
   const admin = createAdminClient();
   const { error: clearError } = await admin
@@ -537,12 +564,19 @@ export async function startManualAnalysis(params: {
     .eq("item_id", params.itemId);
   if (clearError) throw new Error("Não foi possível limpar a avaliação anterior deste item.");
 
+  const priorStatus = owned.status as string;
+  const meta = {
+    ...((owned.meta as Record<string, unknown> | null) ?? {}),
+    priorStatus,
+    manualSource: params.source,
+  };
+
   const { error: updateError } = await supabase
     .from("analysis_items")
     .update({
       status: "processing",
       reason: null,
-      job_id: job.id,
+      job_id: jobId,
       content_snapshot: prepared.text,
       content_hash: computeContentHash(prepared.text),
       models_total: panel.length,
@@ -551,21 +585,28 @@ export async function startManualAnalysis(params: {
       divergence_flag: false,
       divergent_items: null,
       panel_incomplete: false,
+      meta,
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.itemId)
     .eq("user_id", user.id);
 
   if (updateError) throw new Error(updateError.message);
+  if (!jobId) throw new Error("Não foi possível iniciar a análise manual.");
 
-  await publish(
-    panel.map((evaluator) => ({
+  await publish([
+    ...panel.map((evaluator) => ({
       path: "/api/worker/analyze",
-      body: { jobId: job.id, itemId: params.itemId, modelId: evaluator.id },
-    }))
-  );
+      body: { jobId, itemId: params.itemId, modelId: evaluator.id },
+    })),
+    {
+      path: "/api/worker/reconcile",
+      body: { jobId, itemId: params.itemId },
+      delaySeconds: RECONCILE_DELAY_SECONDS,
+    },
+  ]);
 
-  return { jobId: job.id, models: modelIds };
+  return { jobId, models: modelIds };
 }
 
 

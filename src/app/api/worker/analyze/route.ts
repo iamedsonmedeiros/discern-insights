@@ -4,89 +4,13 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { analyzeWithEvaluator, type ModelRun } from "@/lib/content";
 import { persistModelResults } from "@/lib/model-results";
-import { copyScoreToLaterPositions, recordItemOutcome } from "@/lib/jobs";
-import { computeConsensus, type ModelScores } from "@/lib/consensus";
-import { createEvaluator, estimateCost, getPanel } from "@/ai/evaluators";
-import type { PerformDiscernAnalysisOutput } from "@/lib/types";
+import { finalizeReportedModels } from "@/lib/jobs";
+import { createEvaluator, estimateCost } from "@/ai/evaluators";
 
 // Stage 2 of the fan-out: ONE model evaluates ONE already-extracted snapshot.
 // Scoping each invocation to a single model keeps it well inside the 60s budget
 // and means a failing provider costs us that evaluator, not the whole item.
 export const maxDuration = 60;
-
-/**
- * Called by whichever model worker finishes last. Reads every model's verdict,
- * computes the consensus, and closes the item.
- *
- * The write is a compare-and-swap on `status`: if two workers race to finalize,
- * Postgres picks exactly one winner, and only that winner bumps the job counter.
- * This is also what makes a QStash redelivery harmless.
- */
-async function finalizeItem(
-  jobId: string,
-  itemId: string,
-  modelsTotal: number,
-  jobModels: string[] | null
-) {
-  const supabase = createAdminClient();
-
-  const { data: rows } = await supabase
-    .from("analysis_model_results")
-    .select("model_id, status, scores, result")
-    .eq("item_id", itemId);
-
-  const succeeded = (rows ?? []).filter((row) => row.status === "done" && row.scores);
-
-  // Panel order decides whose narrative is shown; fall back to any model that
-  // did succeed if the primary one didn't.
-  const panelOrder = getPanel(jobModels ?? undefined).map((evaluator) => evaluator.id);
-  const primary =
-    succeeded
-      .slice()
-      .sort((a, b) => panelOrder.indexOf(a.model_id) - panelOrder.indexOf(b.model_id))
-      .at(0) ?? null;
-
-  const consensus = computeConsensus(
-    succeeded.map((row): ModelScores => ({
-      modelId: row.model_id,
-      scores: row.scores as Record<string, number | null>,
-    }))
-  );
-
-  const isCompleted = Boolean(primary);
-
-  const { data: claimed } = await supabase
-    .from("analysis_items")
-    .update({
-      status: isCompleted ? "completed" : "analysis_error",
-      reason: isCompleted ? null : "Every model in the panel failed to analyze this page.",
-      discern_result: (primary?.result as PerformDiscernAnalysisOutput) ?? null,
-      consensus: consensus ?? null,
-      divergence_flag: consensus?.divergenceFlag ?? false,
-      divergent_items: consensus?.divergentItems ?? null,
-      panel_incomplete: succeeded.length < modelsTotal,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", itemId)
-    .eq("status", "processing") // <- only one worker can win this
-    .select("id")
-    .maybeSingle();
-
-  if (!claimed) {
-    return { finalized: false as const };
-  }
-
-  await recordItemOutcome(jobId, isCompleted);
-  await copyScoreToLaterPositions(itemId);
-
-  return {
-    finalized: true as const,
-    isCompleted,
-    modelsSucceeded: succeeded.length,
-    modelsTotal,
-    divergentItems: consensus?.divergentItems ?? [],
-  };
-}
 
 async function handler(request: NextRequest) {
   let jobId: string | undefined;
@@ -186,7 +110,7 @@ async function handler(request: NextRequest) {
       .eq("item_id", itemId);
 
     if ((count ?? 0) >= modelsTotal) {
-      const outcome = await finalizeItem(jobId, itemId, modelsTotal, job?.models ?? null);
+      const outcome = await finalizeReportedModels(jobId, itemId);
       return NextResponse.json({ itemId, modelId, status: run.status, ...outcome });
     }
 

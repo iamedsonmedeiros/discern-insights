@@ -119,6 +119,35 @@ export function htmlToText(html: string): string {
   return cleanHtml.trim();
 }
 
+/** Pasted page source. Always strips tags, scripts and styles, unlike htmlToText's markdown shortcut. */
+export function pageSourceToText(html: string): string {
+  let clean = html.replace(/<script[\s\S]*?<\/script>/gi, " ");
+  clean = clean.replace(/<style[\s\S]*?<\/style>/gi, " ");
+  clean = clean.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+  clean = clean.replace(/<head[\s\S]*?<\/head>/gi, " ");
+  clean = clean.replace(/<!--[\s\S]*?-->/g, " ");
+  clean = clean.replace(/<\/(p|div|h[1-6]|li|tr|br|section|article)>/gi, "\n");
+  clean = clean.replace(/<[^>]+>/g, " ");
+  clean = clean.replace(/&nbsp;/g, " ");
+  clean = clean.replace(/&amp;/g, "&");
+  clean = clean.replace(/&lt;/g, "<");
+  clean = clean.replace(/&gt;/g, ">");
+  clean = clean.replace(/&quot;/g, '"');
+  clean = clean.replace(/&#39;/g, "'");
+  clean = clean.replace(/[ \t]+/g, " ");
+  clean = clean.replace(/\n{3,}/g, "\n\n");
+  return clean.trim();
+}
+
+/** Text of a PDF the user attached in place of a page the extractor could not read. */
+export async function textFromPdf(bytes: Uint8Array): Promise<string> {
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(bytes);
+  const extracted = await extractText(pdf, { mergePages: true });
+  const text = extracted.text;
+  return Array.isArray(text) ? text.join("\n\n") : String(text ?? "");
+}
+
 /**
  * Stage 1 — scrape a URL into an immutable text snapshot.
  *

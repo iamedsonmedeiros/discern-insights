@@ -46,6 +46,9 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [isManualAnalysisOpen, setIsManualAnalysisOpen] = useState(false);
   const [manualAnalysisTargetId, setManualAnalysisTargetId] = useState<string | null>(null);
   const [manualAnalysisText, setManualAnalysisText] = useState("");
+  const [manualSource, setManualSource] = useState<"text" | "html" | "pdf">("text");
+  const [manualPdfName, setManualPdfName] = useState("");
+  const [manualPdfBase64, setManualPdfBase64] = useState("");
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const itemsRef = useRef<AnalysisItem[]>([]);
   const manualPollRef = useRef<number | null>(null);
@@ -599,18 +602,42 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
 
   const handleOpenManualAnalysis = (itemId: string) => {
     setManualAnalysisTargetId(itemId);
+    setManualSource("text");
+    setManualAnalysisText("");
+    setManualPdfName("");
+    setManualPdfBase64("");
     setIsManualAnalysisOpen(true);
   };
 
+  const handleManualPdf = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 8_000_000) {
+      toast({ title: t("manualAnalysis.errorTitle"), description: t("manualAnalysis.pdfTooBig"), variant: "destructive" });
+      return;
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    setManualPdfBase64(btoa(binary));
+    setManualPdfName(file.name);
+  };
+
   const handleManualAnalysisSubmit = async () => {
-    if (!manualAnalysisTargetId || !manualAnalysisText) return;
+    if (!manualAnalysisTargetId) return;
+    if (manualSource !== "pdf" && !manualAnalysisText.trim()) return;
+    if (manualSource === "pdf" && !manualPdfBase64) return;
 
     const itemId = manualAnalysisTargetId;
     setIsSubmittingManual(true);
     try {
       const started = await startManualAnalysis({
         itemId,
-        text: manualAnalysisText,
+        source: manualSource,
+        text: manualSource === "pdf" ? undefined : manualAnalysisText,
+        pdfBase64: manualSource === "pdf" ? manualPdfBase64 : undefined,
         language: locale,
         modelIds: selectedModels,
       });
@@ -657,6 +684,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       toast({ title: t("manualAnalysis.queuedTitle"), description: t("manualAnalysis.queuedBody", { models: names.join(", ") }) });
       setIsManualAnalysisOpen(false);
       setManualAnalysisText("");
+      setManualPdfName("");
+      setManualPdfBase64("");
       setManualAnalysisTargetId(null);
     } catch (error) {
       toast({
@@ -964,17 +993,50 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
-            <Textarea
-              placeholder={t('manualAnalysis.placeholder')}
-              rows={15}
-              value={manualAnalysisText}
-              onChange={(e) => setManualAnalysisText(e.target.value)}
-            />
+            <div className="flex gap-2">
+              {([
+                ["text", "manualAnalysis.mode.text"],
+                ["html", "manualAnalysis.mode.html"],
+                ["pdf", "manualAnalysis.mode.pdf"],
+              ] as const).map(([source, label]) => (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => setManualSource(source)}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-sm",
+                    manualSource === source ? "border-primary bg-primary/10 text-primary" : "border-slate-200 text-muted-foreground"
+                  )}
+                >
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t(manualSource === "html" ? "manualAnalysis.hint.html" : manualSource === "pdf" ? "manualAnalysis.hint.pdf" : "manualAnalysis.hint.text")}
+            </p>
+            {manualSource === "pdf" ? (
+              <div className="grid gap-2">
+                <Input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(event) => handleManualPdf(event.target.files?.[0])}
+                />
+                {manualPdfName && <p className="text-sm">{manualPdfName}</p>}
+              </div>
+            ) : (
+              <Textarea
+                placeholder={t(manualSource === "html" ? "manualAnalysis.placeholderHtml" : "manualAnalysis.placeholder")}
+                rows={15}
+                value={manualAnalysisText}
+                onChange={(e) => setManualAnalysisText(e.target.value)}
+              />
+            )}
           </div>
           <DialogFooter>
             <Button
               onClick={handleManualAnalysisSubmit}
-              disabled={!manualAnalysisText || isSubmittingManual}
+              disabled={isSubmittingManual || (manualSource === "pdf" ? !manualPdfBase64 : !manualAnalysisText.trim())}
             >
               {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('manualAnalysis.submit')}
