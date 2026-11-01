@@ -6,7 +6,7 @@ import type { DiscernLocale } from "@/lib/discern-items";
 import { parseSearchRows, type SearchHit, type SearchImport } from "@/lib/search-import";
 import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
-import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash, pageSourceToText, textFromPdf } from "@/lib/content";
+import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash, pageSourceToText } from "@/lib/content";
 import { persistModelResults } from "@/lib/model-results";
 import { computeConsensus } from "@/lib/consensus";
 import { getPanel, getAvailableModels, estimateCost, GEMINI_EVALUATOR_ID } from "@/ai/evaluators";
@@ -488,7 +488,22 @@ export async function startManualAnalysis(params: {
   itemId: string;
   source: "text" | "html" | "pdf";
   text?: string;
-  pdfBase64?: string;
+  language?: string;
+  modelIds?: string[];
+}): Promise<{ jobId: string; models: string[] } | { error: string }> {
+  try {
+    return await queueManualAnalysis(params);
+  } catch (error) {
+    console.error("Manual analysis failed:", error);
+    const message = error instanceof Error ? error.message : "Não foi possível iniciar a análise manual.";
+    return { error: message };
+  }
+}
+
+async function queueManualAnalysis(params: {
+  itemId: string;
+  source: "text" | "html" | "pdf";
+  text?: string;
   language?: string;
   modelIds?: string[];
 }): Promise<{ jobId: string; models: string[] }> {
@@ -505,10 +520,8 @@ export async function startManualAnalysis(params: {
 
   let text = "";
   if (params.source === "pdf") {
-    const raw = params.pdfBase64?.trim() ?? "";
-    if (!raw) throw new Error("Anexe um PDF antes de analisar.");
-    const bytes = Buffer.from(raw, "base64");
-    text = (await textFromPdf(bytes)).replace(/\s+/g, " ").trim();
+    text = params.text?.trim() ?? "";
+    if (!text) throw new Error("Anexe um PDF antes de analisar.");
     if (text.length < MIN_TEXT_LENGTH) {
       throw new Error(`O PDF tem texto insuficiente (${text.length} caracteres). Salve a página como PDF com o texto selecionável, não como imagem.`);
     }

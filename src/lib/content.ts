@@ -139,15 +139,6 @@ export function pageSourceToText(html: string): string {
   return clean.trim();
 }
 
-/** Text of a PDF the user attached in place of a page the extractor could not read. */
-export async function textFromPdf(bytes: Uint8Array): Promise<string> {
-  const { extractText, getDocumentProxy } = await import("unpdf");
-  const pdf = await getDocumentProxy(bytes);
-  const extracted = await extractText(pdf, { mergePages: true });
-  const text = extracted.text;
-  return Array.isArray(text) ? text.join("\n\n") : String(text ?? "");
-}
-
 /**
  * Stage 1 — scrape a URL into an immutable text snapshot.
  *

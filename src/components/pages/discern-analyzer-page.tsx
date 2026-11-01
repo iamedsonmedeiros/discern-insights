@@ -8,6 +8,8 @@ import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisIt
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
 import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
+import { MIN_TEXT_LENGTH } from "@/lib/eligibility";
+import { textFromPdfBytes } from "@/lib/pdf-text";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
 import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
@@ -48,10 +50,11 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [manualAnalysisText, setManualAnalysisText] = useState("");
   const [manualSource, setManualSource] = useState<"text" | "html" | "pdf">("text");
   const [manualPdfName, setManualPdfName] = useState("");
-  const [manualPdfBase64, setManualPdfBase64] = useState("");
+  const [manualPdfBytes, setManualPdfBytes] = useState<Uint8Array | null>(null);
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const itemsRef = useRef<AnalysisItem[]>([]);
   const manualPollRef = useRef<number | null>(null);
+  const manualWatchRef = useRef<Set<string>>(new Set());
   const [notificationPermission, setNotificationPermission] = useState("default");
   const [pasteContent, setPasteContent] = useState("");
   const [searchImports, setSearchImports] = useState<SearchImport[]>([]);
@@ -605,42 +608,57 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     setManualSource("text");
     setManualAnalysisText("");
     setManualPdfName("");
-    setManualPdfBase64("");
+    setManualPdfBytes(null);
     setIsManualAnalysisOpen(true);
   };
 
   const handleManualPdf = async (file: File | undefined) => {
     if (!file) return;
-    if (file.size > 8_000_000) {
+    if (file.size > 20_000_000) {
       toast({ title: t("manualAnalysis.errorTitle"), description: t("manualAnalysis.pdfTooBig"), variant: "destructive" });
       return;
     }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-    }
-    setManualPdfBase64(btoa(binary));
+    setManualPdfBytes(new Uint8Array(await file.arrayBuffer()));
     setManualPdfName(file.name);
   };
 
   const handleManualAnalysisSubmit = async () => {
     if (!manualAnalysisTargetId) return;
     if (manualSource !== "pdf" && !manualAnalysisText.trim()) return;
-    if (manualSource === "pdf" && !manualPdfBase64) return;
+    if (manualSource === "pdf" && !manualPdfBytes) return;
 
     const itemId = manualAnalysisTargetId;
     setIsSubmittingManual(true);
     try {
+      let text = manualAnalysisText;
+      if (manualSource === "pdf" && manualPdfBytes) {
+        try {
+          text = await textFromPdfBytes(manualPdfBytes);
+        } catch (error) {
+          console.error("PDF text extraction failed:", error);
+          toast({ title: t("manualAnalysis.errorTitle"), description: t("manualAnalysis.pdfUnreadable"), variant: "destructive" });
+          return;
+        }
+        if (text.length < MIN_TEXT_LENGTH) {
+          toast({
+            title: t("manualAnalysis.errorTitle"),
+            description: t("manualAnalysis.pdfTooShort", { count: text.length }),
+            variant: "destructive",
+          });
+          return;
+        }
+      }
       const started = await startManualAnalysis({
         itemId,
         source: manualSource,
-        text: manualSource === "pdf" ? undefined : manualAnalysisText,
-        pdfBase64: manualSource === "pdf" ? manualPdfBase64 : undefined,
+        text,
         language: locale,
         modelIds: selectedModels,
       });
+      if ("error" in started) {
+        toast({ title: t("manualAnalysis.errorTitle"), description: started.error, variant: "destructive" });
+        return;
+      }
       const names = started.models.map((id) => availableModels.find((m) => m.id === id)?.displayName ?? id);
 
       setItems((prev) => prev.map((item) => item.id === itemId
@@ -660,24 +678,34 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
         : item
       ));
 
-      // A batch already on screen keeps its progress bar. This item is polled on its own.
-      if (!backgroundJobId || backgroundJobStatus !== "processing") {
-        setBackgroundJobId(started.jobId);
-        setBackgroundJobStatus("processing");
-        setBackgroundProgress({ completed: 0, failed: 0, total: 1 });
-      } else if (manualPollRef.current == null) {
+      // The row stays on its finished batch, so the batch banner is left alone.
+      // Poll until every manual row submitted in this session leaves "processing".
+      manualWatchRef.current.add(itemId);
+      if (manualPollRef.current == null) {
+        const jobId = started.jobId;
         manualPollRef.current = window.setInterval(async () => {
-          const updated = await fetchAnalysisItems();
-          const mine = updated.find((item) => item.id === itemId);
-          if (!mine || mine.status === "processing") return;
-          if (manualPollRef.current != null) window.clearInterval(manualPollRef.current);
-          manualPollRef.current = null;
+          const updated = await fetchAnalysisItems({ jobId });
+          if (updated.length === 0) return;
+          const finished: AnalysisItem[] = [];
+          for (const id of manualWatchRef.current) {
+            const mine = updated.find((item) => item.id === id);
+            if (mine && mine.status !== "processing") {
+              manualWatchRef.current.delete(id);
+              finished.push(mine);
+            }
+          }
           setItems(updated);
-          toast({
-            title: mine.status === "completed" ? t("manualAnalysis.successTitle") : t("manualAnalysis.errorTitle"),
-            description: mine.reason || t("manualAnalysis.successBody"),
-            variant: mine.status === "completed" ? "default" : "destructive",
-          });
+          for (const mine of finished) {
+            toast({
+              title: mine.status === "completed" ? t("manualAnalysis.successTitle") : t("manualAnalysis.errorTitle"),
+              description: mine.reason || t("manualAnalysis.successBody"),
+              variant: mine.status === "completed" ? "default" : "destructive",
+            });
+          }
+          if (manualWatchRef.current.size === 0 && manualPollRef.current != null) {
+            window.clearInterval(manualPollRef.current);
+            manualPollRef.current = null;
+          }
         }, 3000);
       }
 
@@ -685,7 +713,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       setIsManualAnalysisOpen(false);
       setManualAnalysisText("");
       setManualPdfName("");
-      setManualPdfBase64("");
+      setManualPdfBytes(null);
       setManualAnalysisTargetId(null);
     } catch (error) {
       toast({
@@ -1036,7 +1064,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
           <DialogFooter>
             <Button
               onClick={handleManualAnalysisSubmit}
-              disabled={isSubmittingManual || (manualSource === "pdf" ? !manualPdfBase64 : !manualAnalysisText.trim())}
+              disabled={isSubmittingManual || (manualSource === "pdf" ? !manualPdfBytes : !manualAnalysisText.trim())}
             >
               {isSubmittingManual && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('manualAnalysis.submit')}

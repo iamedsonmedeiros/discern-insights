@@ -150,7 +150,7 @@ Ordem prática: colar o texto das páginas bloqueadas, para a amostra não encol
 
 ### No navegador
 
-`processNextAvailable` pega a próxima linha pendente, na ordem do `#`. Se uma linha anterior do mesmo URL já terminou, copia status, nota, consenso e snapshot, grava `sameScoreAs` e segue. Caso contrário chama `processUrl` com os modelos marcados. O navegador espera essa URL acabar antes de pedir a próxima. Dá para pausar e continuar. A análise manual fica na mesma linha da fila. Aceita o texto do artigo, o código-fonte da página (scripts, estilos e etiquetas saem antes da nota) ou um PDF com texto selecionável. Se a linha já pertence a um lote, ela não muda de lote. Uma página que já tinha sido contada como falha passa a contar como concluída, sem entrar duas vezes no total.
+`processNextAvailable` pega a próxima linha pendente, na ordem do `#`. Se uma linha anterior do mesmo URL já terminou, copia status, nota, consenso e snapshot, grava `sameScoreAs` e segue. Caso contrário chama `processUrl` com os modelos marcados. O navegador espera essa URL acabar antes de pedir a próxima. Dá para pausar e continuar. A análise manual fica na mesma linha da fila. Aceita o texto do artigo, o código-fonte da página (scripts, estilos e etiquetas saem antes da nota) ou um PDF com texto selecionável. O texto do PDF é extraído no navegador e só ele segue para os modelos. Se a linha já pertence a um lote, ela não muda de lote. Uma página que já tinha sido contada como falha passa a contar como concluída, sem entrar duas vezes no total.
 
 ### Em segundo plano
 
