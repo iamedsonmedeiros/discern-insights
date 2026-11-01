@@ -11,6 +11,7 @@ import { DISCERN_ITEMS } from "@/lib/consensus";
 import { discernLabel, INSTRUMENT_VERSION, isCurrentInstrument, type DiscernLocale } from "@/lib/discern-items";
 import { buildIccMatrix, computeIcc } from "@/lib/reliability";
 import { getReportedScores, shortModelName, type ReportedScores } from "@/lib/reported-scores";
+import { describeSearchImports, type SearchImport } from "@/lib/search-import";
 import type { AnalysisItem, AnalysisStatus, Consensus } from "@/lib/types";
 
 /** Fields the article needs; the client strips everything else to keep the payload small. */
@@ -127,7 +128,7 @@ function reliabilitySection(consensuses: Consensus[]): string[] {
  * (the validated Brazilian Portuguese wording for "pt-BR"), so the manuscript
  * quotes the instrument in the language it is written in.
  */
-export function formatArticleData(items: ArticleItem[], locale: DiscernLocale = "en"): string {
+export function formatArticleData(items: ArticleItem[], locale: DiscernLocale = "en", search?: SearchImport[]): string {
   const { included: reported, legacy } = includedItems(items);
   const included = reported.map((r) => r.item);
   const consensuses = included.map((item) => item.consensus).filter((c): c is Consensus => !!c);
@@ -140,6 +141,14 @@ export function formatArticleData(items: ArticleItem[], locale: DiscernLocale = 
   const divergentSites = included.filter((item) => (item.divergentItems?.length ?? 0) > 0).length;
 
   const lines: string[] = [];
+
+  if (search?.length) {
+    lines.push(
+      "## Search collection (computed from the imported spreadsheet; report these values, do not recompute)",
+      `- ${describeSearchImports(search, locale)}`,
+      "",
+    );
+  }
 
   lines.push(
     "## Study period",

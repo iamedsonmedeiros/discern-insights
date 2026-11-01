@@ -3,6 +3,7 @@
 import { createScientificArticle } from "@/ai/flows/create-scientific-article";
 import type { ArticleItem } from "@/lib/article-data";
 import type { DiscernLocale } from "@/lib/discern-items";
+import { parseSearchRows, type SearchImport } from "@/lib/search-import";
 import type { AnalysisItem, AnalysisStatus, AnalysisJob } from "@/lib/types";
 import { createClient } from "@/lib/supabase-server";
 import { extractContent, runPanel, prepareTextForAnalysis, computeContentHash } from "@/lib/content";
@@ -505,20 +506,34 @@ export async function startManualAnalysis(params: {
 }
 
 
+/** Reads the Chrome collector workbook and returns the organic addresses plus the counts. */
+export async function parseSearchWorkbook(fileBase64: string): Promise<(SearchImport & { urls: string[] }) | null> {
+  await getAuthenticatedUser();
+  const XLSX = await import("xlsx");
+  const book = XLSX.read(Buffer.from(fileBase64, "base64"), { type: "buffer" });
+  const sheet = book.Sheets[book.SheetNames[0]];
+  if (!sheet) return null;
+  const rows = (XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" }) as unknown[][])
+    .map((row) => (Array.isArray(row) ? row : []).map((cell) => (cell == null ? "" : String(cell))));
+  return parseSearchRows(rows);
+}
+
 export async function generateArticleAction({
   items,
   topic,
   locale,
+  search,
 }: {
   items: ArticleItem[];
   topic: string;
   locale: DiscernLocale;
+  search?: SearchImport[];
 }) {
   // Ensure user is authenticated
   await getAuthenticatedUser();
 
   try {
-    const result = await createScientificArticle({ items, topic, locale });
+    const result = await createScientificArticle({ items, topic, locale, search });
     return result;
   } catch (error) {
     console.error("Article generation failed:", error);

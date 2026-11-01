@@ -4,9 +4,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults } from "@/app/actions";
+import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
+import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
 import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
@@ -50,6 +51,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const manualPollRef = useRef<number | null>(null);
   const [notificationPermission, setNotificationPermission] = useState("default");
   const [pasteContent, setPasteContent] = useState("");
+  const [searchImports, setSearchImports] = useState<SearchImport[]>([]);
   const [keyword, setKeyword] = useState("");
   const { toast } = useToast();
   const isProcessingRef = useRef(false);
@@ -65,6 +67,10 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const [backgroundJobStatus, setBackgroundJobStatus] = useState<string | null>(null);
   const [backgroundProgress, setBackgroundProgress] = useState<{ completed: number; failed: number; total: number } | null>(null);
+
+  useEffect(() => {
+    setSearchImports(loadSearchImports());
+  }, []);
 
   useEffect(() => {
     fetchAvailableModels()
@@ -323,26 +329,42 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   }, [items]);
 
   const handlePasteImport = async () => {
-    const urls = extractUrlsFromString(pasteContent);
-    await importUrls(urls);
+    const parsed = parseSearchCsv(pasteContent);
+    if (parsed) await importSpreadsheet(parsed);
+    else await importUrls(extractUrlsFromString(pasteContent));
     setPasteContent(""); // Clear the textarea after import
   };
 
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const content = event.target?.result as string;
-      const urls = extractUrlsFromString(content);
-      await importUrls(urls);
-    };
-    reader.readAsText(file);
-    e.target.value = ''; // Reset file input
+    e.target.value = "";
+    try {
+      if (file.name.toLowerCase().endsWith(".xlsx")) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        const parsed = await parseSearchWorkbook(btoa(binary));
+        if (!parsed) {
+          toast({ title: t("import.sheetUnrecognized"), variant: "destructive" });
+          return;
+        }
+        await importSpreadsheet(parsed);
+        return;
+      }
+      const text = await file.text();
+      const parsed = parseSearchCsv(text);
+      if (parsed) {
+        await importSpreadsheet(parsed);
+        return;
+      }
+      await importUrls(extractUrlsFromString(text));
+    } catch (error) {
+      toast({ title: t("import.sheetUnrecognized"), description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+    }
   };
 
-  const importUrls = async (urls: string[]) => {
+  const importUrls = async (urls: string[], options?: { silent?: boolean }) => {
     const MAX_ITEMS = 200;
     let newUrls = [...urls];
 
@@ -389,7 +411,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
           title: t('importLimit.title'),
           description: t('importLimit.partial', { count: importedCount }),
         });
-      } else {
+      } else if (!options?.silent) {
         toast({ title: t('importSuccess.title', { count: importedCount }), description: t('importSuccess.description') });
       }
     } catch (e) {
@@ -402,6 +424,23 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     } finally {
       setIsImporting(false);
     }
+  };
+
+  const importSpreadsheet = async (parsed: SearchImport & { urls: string[] }) => {
+    const { urls, ...summary } = parsed;
+    const known = new Set(items.map((item) => item.url));
+    const fresh = urls.filter((url) => !known.has(url));
+    const room = Math.max(0, 200 - items.length);
+    const entering = fresh.slice(0, room);
+    if (entering.length > 0) {
+      await importUrls(entering, { silent: true });
+      setSearchImports(rememberSearchImport(summary));
+    }
+    const leftOut = summary.rows - summary.organicRows;
+    toast({
+      title: entering.length > 0 ? t("import.sheetTitle") : t("import.sheetEmpty"),
+      description: t("import.sheetBody", { rows: summary.rows, unique: entering.length, organic: summary.organicRows, leftOut }),
+    });
   };
 
   const requestNotificationPermission = async () => {
@@ -504,6 +543,8 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const handleClearAll = async () => {
     if (confirm(t('queue.clearConfirm'))) {
       await clearAnalysisQueue();
+      clearSearchImports();
+      setSearchImports([]);
       setItems([]);
       setActiveItemId(null);
     }
@@ -595,7 +636,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       toast({ title: t('article.noResultsTitle'), description: t('article.noResultsDescription') });
       return;
     }
-    if (!articleTopic.trim()) setArticleTopic(keyword.trim());
+    if (!articleTopic.trim()) setArticleTopic(keyword.trim() || searchImports.find((entry) => entry.term)?.term || "");
     setIsArticleDialogOpen(true);
   };
 
@@ -607,7 +648,12 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     toast({ title: t('article.generatingTitle'), description: t('article.generatingDescription') });
     try {
       // Excluded items go too: the article opens with the sample flow.
-      const result = await generateArticleAction({ items: processedItems.map(toArticleItem), topic, locale });
+      const result = await generateArticleAction({
+        items: processedItems.map(toArticleItem),
+        topic,
+        locale,
+        search: searchImports.length > 0 ? searchImports : undefined,
+      });
       if (result.articleContent) {
         const slug = topic
           .normalize('NFD')
@@ -670,8 +716,15 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
                     </Button>
                   </TabsContent>
                   <TabsContent value="upload" className="mt-4">
-                    <Input id="csv-upload" type="file" accept=".csv,.txt" onChange={handleFileImport} />
+                    <Input id="csv-upload" type="file" accept=".csv,.txt,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFileImport} />
                     <p className="text-xs text-muted-foreground mt-2">{t('import.csvHint')}</p>
+                    {searchImports.length > 0 && (
+                      <p className="text-xs text-muted-foreground mt-2">{t('import.sheetNote', {
+                        rows: searchImports.reduce((sum, entry) => sum + entry.rows, 0),
+                        unique: searchImports.reduce((sum, entry) => sum + entry.uniqueOrganic, 0),
+                        leftOut: searchImports.reduce((sum, entry) => sum + entry.rows - entry.organicRows, 0),
+                      })}</p>
+                    )}
                   </TabsContent>
                 </Tabs>
               </CardContent>

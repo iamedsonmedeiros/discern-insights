@@ -13,6 +13,7 @@ import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
 import { buildScoresTable, formatArticleData, type ArticleItem } from '@/lib/article-data';
 import type { DiscernLocale } from '@/lib/discern-items';
+import { describeSearchImports, type SearchImport } from '@/lib/search-import';
 
 const ARTICLE_MODEL = 'gemini-2.5-flash';
 
@@ -24,6 +25,7 @@ export type CreateScientificArticleInput = {
   items: ArticleItem[];
   topic: string;
   locale: DiscernLocale;
+  search?: SearchImport[];
 };
 export type CreateScientificArticleOutput = z.infer<typeof CreateScientificArticleOutputSchema>;
 
@@ -58,29 +60,31 @@ function citations(locale: DiscernLocale) {
   return { cite, list };
 }
 
-function pageSelection(topic: string, locale: DiscernLocale): { label: string; text: string } {
+function pageSelection(topic: string, locale: DiscernLocale, search?: SearchImport[]): { label: string; text: string } {
+  const counts = search?.length ? describeSearchImports(search, locale) : null;
   if (locale === 'pt-BR') {
     return {
       label: 'Seleção das páginas',
-      text: `As URLs foram coletadas na busca do Google pelo termo "${topic}". A busca foi feita em www.google.com.br, com a interface em português do Brasil e o país definido como Brasil, numa janela sem conta nem histórico, com a personalização desligada e o termo mantido exatamente como foi digitado. As páginas de resultado foram lidas uma a uma, na ordem em que o Google as apresentou, com pausas entre as páginas. Cada item foi registrado na posição em que apareceu e classificado como resultado orgânico, anúncio, resposta de inteligência artificial, mapa ou outro. Links de anúncios não foram requisitados. A triagem do estudo usou os endereços coletados. [A preencher: número de páginas de resultado coletadas e a data da busca.]`,
+      text: `As URLs foram coletadas na busca do Google pelo termo "${topic}". A busca foi feita em www.google.com.br, com a interface em português do Brasil e o país definido como Brasil, numa janela sem conta nem histórico, com a personalização desligada e o termo mantido exatamente como foi digitado. As páginas de resultado foram lidas uma a uma, na ordem em que o Google as apresentou, com pausas entre as páginas. Cada item foi registrado na posição em que apareceu e classificado como resultado orgânico, anúncio, resposta de inteligência artificial, mapa ou outro. Links de anúncios não foram requisitados. ${counts ?? 'A triagem do estudo usou os endereços coletados. [A preencher: número de páginas de resultado coletadas e a data da busca.]'}`,
     };
   }
   return {
     label: 'Page selection',
-    text: `URLs were collected from a Google search for "${topic}". The search was run on www.google.com.br, with the interface in Brazilian Portuguese and the country set to Brazil, in a window without an account or history, with personalization turned off and the query kept exactly as typed. Result pages were read one by one, in the order Google displayed them, with pauses between pages. Each item was recorded in the position where it appeared and classified as an organic result, an advertisement, an AI-generated answer, a map, or other. Advertisement links were not requested. The study screened the addresses collected. [To be completed: number of result pages collected and the date of the search.]`,
+    text: `URLs were collected from a Google search for "${topic}". The search was run on www.google.com.br, with the interface in Brazilian Portuguese and the country set to Brazil, in a window without an account or history, with personalization turned off and the query kept exactly as typed. Result pages were read one by one, in the order Google displayed them, with pauses between pages. Each item was recorded in the position where it appeared and classified as an organic result, an advertisement, an AI-generated answer, a map, or other. Advertisement links were not requested. ${counts ?? 'The study screened the addresses collected. [To be completed: number of result pages collected and the date of the search.]'}`,
   };
 }
 
 /** The model rewrites this paragraph and invents the search date. Put the canonical text back. */
-function keepPageSelection(article: string, topic: string, locale: DiscernLocale): string {
-  const { label, text } = pageSelection(topic, locale);
+function keepPageSelection(article: string, topic: string, locale: DiscernLocale, search?: SearchImport[]): string {
+  const { label, text } = pageSelection(topic, locale, search);
   const pattern = new RegExp(`\\*\\*${label}\\.\\*\\*[\\s\\S]*?(?=\\n\\*\\*)`);
   return pattern.test(article) ? article.replace(pattern, `**${label}.** ${text}\n`) : article;
 }
 
-function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: string; topic: string; locale: DiscernLocale }): string {
+function buildArticlePrompt({ analysisData, topic, locale, search }: { analysisData: string; topic: string; locale: DiscernLocale; search?: SearchImport[] }): string {
   const { cite, list } = citations(locale);
   const pt = locale === 'pt-BR';
+  const selection = pageSelection(topic, locale, search);
   const language = pt ? 'português do Brasil' : 'inglês (English)';
 
   const h = pt
@@ -122,7 +126,7 @@ function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: str
 **Corresponding author:** [To be completed: name, address and email]`;
 
   const methods = pt
-    ? `**${pageSelection(topic, locale).label}.** ${pageSelection(topic, locale).text}
+    ? `**${selection.label}.** ${selection.text}
 
 **Elegibilidade.** Foram incluídas páginas da web com texto escrito. Antes de qualquer avaliação, as URLs foram triadas automaticamente e excluídas quando eram publicações em redes sociais (Facebook, Instagram, TikTok, X/Twitter, Threads, publicações do LinkedIn, Pinterest, Reddit, Kwai, Telegram, WhatsApp; artigos do LinkedIn Pulse foram aceitos como publicações escritas de formato longo), plataformas de vídeo ou páginas compostas apenas por vídeo, ou arquivos PDF, por estarem fora do escopo do instrumento DISCERN. Também foram excluídas páginas que bloquearam o acesso automatizado, retornaram erro HTTP ou forneceram menos de 500 caracteres de texto. [Reporte o fluxo da amostra com os números da seção "Sample flow".]
 
@@ -135,7 +139,7 @@ function buildArticlePrompt({ analysisData, topic, locale }: { analysisData: str
 As páginas foram analisadas em [use o período da seção "Study period"].
 
 **Aspectos éticos.** Este estudo analisou informações de acesso público e não envolveu participantes humanos.`
-    : `**${pageSelection(topic, locale).label}.** ${pageSelection(topic, locale).text}
+    : `**${selection.label}.** ${selection.text}
 
 **Eligibility.** Web pages with written text were included. Before any evaluation, URLs were screened automatically and excluded when they were social media posts (Facebook, Instagram, TikTok, X/Twitter, Threads, LinkedIn posts, Pinterest, Reddit, Kwai, Telegram, WhatsApp; LinkedIn Pulse articles were accepted as long-form written publications), video platforms or video-only pages, or PDF files, as these formats fall outside the scope of the DISCERN instrument. Pages that blocked automated access, returned an HTTP error, or yielded fewer than 500 characters of text were also excluded. [Report the sample flow with the numbers from the "Sample flow" section.]
 
@@ -216,7 +220,7 @@ ${methods}
 
 # ${h.results}
 
-[Comece pelo fluxo da amostra ("Sample flow"): quantas URLs foram triadas, quantas foram excluídas e por qual motivo, e quantas foram analisadas. Em seguida, a concordância entre os modelos (ICC(2,1), ICC(2,k) e o número de avaliações divergentes), quando houver painel.]
+[Se existir a seção "Search collection", comece por ela: quantos resultados a planilha registrou, quantos eram orgânicos e quantos endereços únicos entraram na triagem. Depois o fluxo da amostra ("Sample flow"): quantas URLs foram triadas, quantas foram excluídas e por qual motivo, e quantas foram analisadas. Em seguida, a concordância entre os modelos (ICC(2,1), ICC(2,k) e o número de avaliações divergentes), quando houver painel.]
 
 [Apresente as médias gerais: nota geral (questão 16), confiabilidade (questões 1 a 8) e qualidade da informação sobre tratamentos (questões 9 a 15), com média ± DP.]
 
@@ -268,16 +272,16 @@ export async function createScientificArticle(input: CreateScientificArticleInpu
   const topic = input.topic.trim();
   if (!topic) throw new Error('The article topic is required.');
 
-  const analysisData = formatArticleData(input.items, input.locale);
+  const analysisData = formatArticleData(input.items, input.locale, input.search);
   const { output } = await ai.generate({
-    prompt: buildArticlePrompt({ analysisData, topic, locale: input.locale }),
+    prompt: buildArticlePrompt({ analysisData, topic, locale: input.locale, search: input.search }),
     output: { schema: CreateScientificArticleOutputSchema },
     config: { temperature: 0.4 },
   });
 
   if (!output?.articleContent) throw new Error('The model returned no article.');
 
-  const article = keepPageSelection(output.articleContent, topic, input.locale);
+  const article = keepPageSelection(output.articleContent, topic, input.locale, input.search);
   const table = buildScoresTable(input.items, input.locale);
   const tablesHeading = input.locale === 'pt-BR' ? 'Tabelas' : 'Tables';
   return {
