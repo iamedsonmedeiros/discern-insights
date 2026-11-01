@@ -287,7 +287,7 @@ async function convertFailureToSuccess(jobId: string): Promise<void> {
     .select("completed_urls, failed_urls, total_urls, status")
     .eq("id", jobId)
     .maybeSingle();
-  if (!job || job.status !== "processing") return;
+  if (!job) return;
 
   const failed = Math.max(0, (job.failed_urls ?? 0) - 1);
   const completed = (job.completed_urls ?? 0) + 1;
@@ -300,6 +300,7 @@ async function convertFailureToSuccess(jobId: string): Promise<void> {
     })
     .eq("id", jobId);
 
+  if (job.status !== "processing") return;
   if (completed + failed >= (job.total_urls ?? 0)) {
     const { data: closed } = await supabase
       .from("analysis_jobs")
