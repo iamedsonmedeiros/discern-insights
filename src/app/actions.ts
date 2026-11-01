@@ -71,6 +71,68 @@ export async function fetchAnalysisItems(options?: { jobId?: string, onlyUnassig
   }
 }
 
+export type JobProgress = {
+  id: string;
+  status: string;
+  completed: number;
+  failed: number;
+  total: number;
+};
+
+function toJobProgress(row: {
+  id: string;
+  status: string;
+  completed_urls: number | null;
+  failed_urls: number | null;
+  total_urls: number | null;
+}): JobProgress {
+  return {
+    id: row.id,
+    status: row.status,
+    completed: row.completed_urls ?? 0,
+    failed: row.failed_urls ?? 0,
+    total: row.total_urls ?? 0,
+  };
+}
+
+/** Latest job still running for the signed-in user. The browser client has no session, so this read goes through the server. */
+export async function fetchActiveJob(): Promise<JobProgress | null> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+    const { data, error } = await supabase
+      .from("analysis_jobs")
+      .select("id, status, completed_urls, failed_urls, total_urls")
+      .eq("user_id", user.id)
+      .eq("status", "processing")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toJobProgress(data);
+  } catch (e) {
+    console.error("fetchActiveJob failed:", e);
+    return null;
+  }
+}
+
+/** Counters for one job. Used by the progress bar, which cannot read analysis_jobs from the browser. */
+export async function fetchJobProgress(jobId: string): Promise<JobProgress | null> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+    const { data, error } = await supabase
+      .from("analysis_jobs")
+      .select("id, status, completed_urls, failed_urls, total_urls")
+      .eq("id", jobId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toJobProgress(data);
+  } catch (e) {
+    console.error("fetchJobProgress failed:", e);
+    return null;
+  }
+}
+
 /** The models the user may pick for a job's panel (config- and key-gated). */
 export async function fetchAvailableModels(): Promise<{ id: string; displayName: string }[]> {
   return getAvailableModels();

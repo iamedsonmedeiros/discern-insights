@@ -4,7 +4,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook } from "@/app/actions";
+import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook, fetchActiveJob, fetchJobProgress } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
 import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
@@ -94,37 +94,30 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     }
     // Load initial data from Supabase and check for active background jobs
     const loadData = async () => {
-      const fetchParams = initialJobId ? { jobId: initialJobId } : { onlyUnassigned: true };
-      let activeJobsMatch: any = [];
-      let activeJobError = null;
-
-      // Only query active general jobs if NOT viewing a specific history job
-      if (!initialJobId) {
-        const { data, error } = await supabase.from("analysis_jobs").select("*").eq("status", "processing").order("created_at", { ascending: false }).limit(1);
-        activeJobsMatch = data;
-        activeJobError = error;
+      if (initialJobId) {
+        const savedItems = await fetchAnalysisItems({ jobId: initialJobId });
+        if (savedItems.length >= 0) setItems(savedItems);
+        const job = await fetchJobProgress(initialJobId);
+        setBackgroundJobId(initialJobId);
+        if (job) {
+          setBackgroundJobStatus(job.status);
+          setBackgroundProgress({ completed: job.completed, failed: job.failed, total: job.total });
+        }
+        return;
       }
 
-      const savedItems = await fetchAnalysisItems(fetchParams);
-
-      if (savedItems.length >= 0) {
-        setItems(savedItems);
-      }
-
-      if (activeJobsMatch && activeJobsMatch.length > 0) {
-        const job = activeJobsMatch[0];
+      const job = await fetchActiveJob();
+      if (job) {
         setBackgroundJobId(job.id);
         setBackgroundJobStatus(job.status);
-        setBackgroundProgress({
-          completed: job.completed_urls,
-          failed: job.failed_urls,
-          total: job.total_urls,
-        });
-      } else if (initialJobId) {
-         // If viewing a history component, we should load job info just manually as read-only.
-         // Realtime logic exists below for updates if it gets updated.
-         setBackgroundJobId(initialJobId);
+        setBackgroundProgress({ completed: job.completed, failed: job.failed, total: job.total });
+        const savedItems = await fetchAnalysisItems({ jobId: job.id });
+        if (savedItems.length >= 0) setItems(savedItems);
+        return;
       }
+
+      const savedItems = await fetchAnalysisItems({ onlyUnassigned: true });
+      if (savedItems.length >= 0) setItems(savedItems);
     };
     loadData();
   }, [t, initialJobId]);
@@ -212,34 +205,33 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   useEffect(() => {
     if (!backgroundJobId || backgroundJobStatus !== 'processing') return;
 
+    let cancelled = false;
     const poll = async () => {
-      const { data } = await supabase
-        .from('analysis_jobs')
-        .select('status, completed_urls, failed_urls, total_urls')
-        .eq('id', backgroundJobId)
-        .single();
-
-      if (!data) return;
+      const data = await fetchJobProgress(backgroundJobId);
+      if (!data || cancelled) return;
 
       setBackgroundJobStatus(data.status);
       setBackgroundProgress({
-        completed: data.completed_urls,
-        failed: data.failed_urls,
-        total: data.total_urls,
+        completed: data.completed,
+        failed: data.failed,
+        total: data.total,
       });
 
       if (data.status === 'done' || data.status === 'failed') {
-        fetchAnalysisItems().then((updated) => {
-          if (updated.length > 0) setItems(updated);
-        });
+        const updated = await fetchAnalysisItems({ jobId: backgroundJobId });
+        if (!cancelled && updated.length > 0) setItems(updated);
         if (data.status === 'done') {
           toast({ title: '✅ Análise concluída!', description: 'Verifique seu email para o resumo.' });
         }
       }
     };
 
+    poll();
     const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [backgroundJobId, backgroundJobStatus, toast]);
 
   useEffect(() => () => {
