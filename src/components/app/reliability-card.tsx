@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/components/i18n/use-i18n";
 import { computeIcc, buildIccMatrix, interpretIcc } from "@/lib/reliability";
 import { isCurrentInstrument } from "@/lib/discern-items";
+import { pageKey } from "@/lib/url-key";
 import type { AnalysisItem, Consensus } from "@/lib/types";
 
 const BAND_STYLES: Record<string, string> = {
@@ -45,8 +46,16 @@ export function ReliabilityCard({
 
   const icc = useMemo(() => {
     if (singleModelSession) return null;
-    const analyses = items
-      .filter((i) => isCurrentInstrument(i.discernResult))
+    const seen = new Set<string>();
+    const analyses = [...items]
+      .sort((a, b) => a.index - b.index)
+      .filter((item) => {
+        if (!isCurrentInstrument(item.discernResult) || !item.consensus) return false;
+        const key = pageKey(item.url);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
       .map((i) => i.consensus as Consensus | undefined)
       .filter((c): c is Consensus => !!c);
 

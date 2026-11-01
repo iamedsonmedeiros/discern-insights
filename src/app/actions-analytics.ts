@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase-server";
 import { isCurrentInstrument } from "@/lib/discern-items";
+import { pageKey } from "@/lib/url-key";
 
 export type StatsData = {
     total_analyses: number;
@@ -62,15 +63,25 @@ export async function fetchStats(
     // Scores from an older item set answer different questions and are not averaged in.
     const completedItems = data.filter(item => item.status === 'completed' && isCurrentInstrument(item.discern_result));
     const errorItems = data.filter(item => ['analysis_error', 'scraping_error', 'unavailable_offline'].includes(item.status));
+    // A page that returns later in the search repeats the first score and must not move the mean.
+    const seenPage = new Set<string>();
+    const scoredPages = [...completedItems]
+        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+        .filter((item) => {
+            const key = pageKey(item.url);
+            if (seenPage.has(key)) return false;
+            seenPage.add(key);
+            return true;
+        });
 
     // Calculate Average Score and Total Cost
-    const totalScore = completedItems.reduce((acc, item) => acc + (item.discern_result.domainAverages.score_geral || 0), 0);
-    const averageScore = completedItems.length > 0 ? totalScore / completedItems.length : 0;
+    const totalScore = scoredPages.reduce((acc, item) => acc + (item.discern_result.domainAverages.score_geral || 0), 0);
+    const averageScore = scoredPages.length > 0 ? totalScore / scoredPages.length : 0;
     const totalCost = data.reduce((acc, item) => acc + (item.total_cost || 0), 0);
 
     // Process Top Domains
     const domainMap: Record<string, { count: number; totalScore: number }> = {};
-    completedItems.forEach(item => {
+    scoredPages.forEach(item => {
         try {
             const url = new URL(item.url);
             const domain = url.hostname.replace('www.', '');
@@ -100,7 +111,7 @@ export async function fetchStats(
         trendMap[dateStr] = { count: 0, totalScore: 0 };
     }
 
-    completedItems.forEach(item => {
+    scoredPages.forEach(item => {
         const dateStr = new Date(item.updated_at).toISOString().split('T')[0];
         if (trendMap[dateStr]) {
             trendMap[dateStr].count++;

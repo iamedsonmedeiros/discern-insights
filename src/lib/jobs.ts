@@ -13,6 +13,7 @@ import { computeConsensus, type ModelScores } from "@/lib/consensus";
 import { sendCompletionEmail } from "@/lib/email";
 import { createAdminClient } from "@/lib/supabase-admin";
 import type { PerformDiscernAnalysisOutput } from "@/lib/types";
+import { pageKey } from "@/lib/url-key";
 
 type JobCounters = {
   completed_urls: number;
@@ -70,85 +71,6 @@ export async function recordItemOutcome(
   return counters[0] as JobCounters;
 }
 
-/**
- * A later row of the same address is not analyzed again. Once the first position
- * reaches a final status, every still-pending later position receives that score.
- * Each copied row counts as one finished item of its job.
- */
-export async function copyScoreToLaterPositions(sourceId: string): Promise<void> {
-  const supabase = createAdminClient();
-  const { data: source } = await supabase.from("analysis_items").select("*").eq("id", sourceId).maybeSingle();
-  if (!source || source.status === "pending" || source.status === "processing") return;
-
-  const { data: later } = await supabase
-    .from("analysis_items")
-    .select("id, meta, job_id")
-    .eq("user_id", source.user_id)
-    .eq("url", source.url)
-    .eq("status", "pending")
-    .gt("index", source.index);
-
-  for (const row of later ?? []) {
-    const meta = { ...(source.meta ?? {}), ...(row.meta ?? {}), sameScoreAs: source.id };
-    const { data: claimed } = await supabase
-      .from("analysis_items")
-      .update({
-        status: source.status,
-        reason: source.reason,
-        discern_result: source.discern_result,
-        consensus: source.consensus,
-        divergence_flag: source.divergence_flag,
-        divergent_items: source.divergent_items,
-        panel_incomplete: source.panel_incomplete,
-        models_total: source.models_total,
-        content_snapshot: source.content_snapshot,
-        content_hash: source.content_hash,
-        extraction_method: source.extraction_method,
-        model_id: source.model_id,
-        meta,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id)
-      .eq("status", "pending")
-      .select("id")
-      .maybeSingle();
-
-    if (claimed && row.job_id) await recordItemOutcome(row.job_id, source.status === "completed");
-  }
-
-  // A rescore of the first position has to reach the rows that already show its score.
-  const { data: copies } = await supabase
-    .from("analysis_items")
-    .select("id, meta, status")
-    .eq("user_id", source.user_id)
-    .eq("url", source.url)
-    .gt("index", source.index);
-
-  for (const row of copies ?? []) {
-    const meta = row.meta as { sameScoreAs?: string } | null;
-    if (meta?.sameScoreAs !== source.id || row.status === "pending" || row.status === "processing") continue;
-    await supabase
-      .from("analysis_items")
-      .update({
-        status: source.status,
-        reason: source.reason,
-        discern_result: source.discern_result,
-        consensus: source.consensus,
-        divergence_flag: source.divergence_flag,
-        divergent_items: source.divergent_items,
-        panel_incomplete: source.panel_incomplete,
-        models_total: source.models_total,
-        content_snapshot: source.content_snapshot,
-        content_hash: source.content_hash,
-        extraction_method: source.extraction_method,
-        model_id: source.model_id,
-        meta: { ...(source.meta ?? {}), ...(row.meta ?? {}), sameScoreAs: source.id },
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id);
-  }
-}
-
 const COUNTED_FAILURE = new Set([
   "not_eligible_pdf",
   "not_eligible_video",
@@ -157,6 +79,104 @@ const COUNTED_FAILURE = new Set([
   "scraping_error",
   "analysis_error",
 ]);
+
+type ScoreSource = {
+  id: string;
+  status: string;
+  reason: string | null;
+  discern_result: unknown;
+  consensus: unknown;
+  divergence_flag: boolean | null;
+  divergent_items: unknown;
+  panel_incomplete: boolean | null;
+  models_total: number | null;
+  content_snapshot: string | null;
+  content_hash: string | null;
+  extraction_method: string | null;
+  model_id: string | null;
+  meta: Record<string, unknown> | null;
+};
+
+/** The later row keeps its own place in the search. It does not inherit the rescore bookkeeping of the first. */
+function copiedScore(source: ScoreSource, rowMeta: Record<string, unknown> | null) {
+  const { priorStatus: _prior, ...sourceMeta } = source.meta ?? {};
+  return {
+    status: source.status,
+    reason: source.reason,
+    discern_result: source.discern_result,
+    consensus: source.consensus,
+    divergence_flag: source.divergence_flag,
+    divergent_items: source.divergent_items,
+    panel_incomplete: source.panel_incomplete,
+    models_total: source.models_total,
+    content_snapshot: source.content_snapshot,
+    content_hash: source.content_hash,
+    extraction_method: source.extraction_method,
+    model_id: source.model_id,
+    meta: { ...sourceMeta, ...(rowMeta ?? {}), sameScoreAs: source.id },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * A later row of the same page is not analyzed again. Tracking parameters such
+ * as Google's srsltid do not make a new page. Once the first position reaches
+ * a final status, every later position in the same batch receives that score.
+ * A row that was still pending counts as newly finished. A row already counted
+ * as a failure becomes a success when the first position has a score.
+ */
+export async function copyScoreToLaterPositions(sourceId: string): Promise<void> {
+  const supabase = createAdminClient();
+  const { data: source } = await supabase.from("analysis_items").select("*").eq("id", sourceId).maybeSingle();
+  if (!source || source.status === "pending" || source.status === "processing") return;
+
+  let query = supabase
+    .from("analysis_items")
+    .select("id, url, meta, job_id, status")
+    .eq("user_id", source.user_id)
+    .gt("index", source.index);
+  query = source.job_id ? query.eq("job_id", source.job_id) : query.is("job_id", null);
+
+  const { data: later } = await query;
+  const key = pageKey(source.url);
+
+  for (const row of later ?? []) {
+    if (pageKey(row.url) !== key || row.status === "processing") continue;
+    const already = (row.meta as { sameScoreAs?: string } | null)?.sameScoreAs === source.id;
+    // A later position that was scored on its own stays when the first one never produced a score.
+    if (!already && source.status !== "completed" && row.status === "completed") continue;
+
+    const payload = copiedScore(source as ScoreSource, row.meta as Record<string, unknown> | null);
+    if (row.status === "pending") {
+      const { data: claimed } = await supabase
+        .from("analysis_items")
+        .update(payload)
+        .eq("id", row.id)
+        .eq("status", "pending")
+        .select("id")
+        .maybeSingle();
+      if (claimed && row.job_id) await recordItemOutcome(row.job_id, source.status === "completed");
+      continue;
+    }
+
+    if (already) {
+      await supabase.from("analysis_items").update(payload).eq("id", row.id);
+      continue;
+    }
+
+    const { data: claimed } = await supabase
+      .from("analysis_items")
+      .update(payload)
+      .eq("id", row.id)
+      .eq("status", row.status)
+      .select("id")
+      .maybeSingle();
+    if (!claimed || !row.job_id) continue;
+    if (COUNTED_FAILURE.has(row.status) && source.status === "completed") {
+      await convertFailureToSuccess(row.job_id);
+    }
+  }
+}
 
 /** How long a missing model may stay silent before the item closes with the models that did answer. */
 export const RECONCILE_DELAY_SECONDS = 240;

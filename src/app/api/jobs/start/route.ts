@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase-server";
 import { publish } from "@/lib/queue";
 import { getAvailableModels } from "@/ai/evaluators";
+import { pageKey } from "@/lib/url-key";
 
 // Vercel Hobby: max 30 seconds should be plenty for job creation
 export const maxDuration = 30;
@@ -104,8 +105,9 @@ export async function POST(request: NextRequest) {
     // row, in order, and receives that score when the first position finishes.
     const seenUrl = new Set<string>();
     const firstPositions = pendingItems.filter((item) => {
-      if (seenUrl.has(item.url)) return false;
-      seenUrl.add(item.url);
+      const key = pageKey(item.url);
+      if (seenUrl.has(key)) return false;
+      seenUrl.add(key);
       return true;
     });
 

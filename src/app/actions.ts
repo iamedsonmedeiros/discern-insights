@@ -14,6 +14,7 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { RECONCILE_DELAY_SECONDS } from "@/lib/jobs";
 import { MIN_TEXT_LENGTH } from "@/lib/eligibility";
 import { publish } from "@/lib/queue";
+import { pageKey } from "@/lib/url-key";
 // Reverted pdf-parse
 
 // --- Helper to get authenticated user ---
@@ -674,7 +675,8 @@ export async function expandJobPanel(
     for (const item of [...(items ?? [])].sort((a, b) => a.index - b.index)) {
       const meta = item.meta as { sameScoreAs?: string } | null;
       if (item.status !== "completed" || !item.content_snapshot || meta?.sameScoreAs) continue;
-      if (!firstByUrl.has(item.url)) firstByUrl.set(item.url, item);
+      const key = pageKey(item.url);
+      if (!firstByUrl.has(key)) firstByUrl.set(key, item);
     }
     const targets = [...firstByUrl.values()];
 

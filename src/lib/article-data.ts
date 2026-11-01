@@ -12,6 +12,7 @@ import { discernLabel, INSTRUMENT_VERSION, isCurrentInstrument, type DiscernLoca
 import { buildIccMatrix, computeIcc } from "@/lib/reliability";
 import { getReportedScores, shortModelName, type ReportedScores } from "@/lib/reported-scores";
 import { describeSearchImports, type SearchImport } from "@/lib/search-import";
+import { pageKey } from "@/lib/url-key";
 import type { AnalysisItem, AnalysisStatus, Consensus } from "@/lib/types";
 
 /** Fields the article needs; the client strips everything else to keep the payload small. */
@@ -135,11 +136,12 @@ function firstPositions(items: ArticleItem[]): { kept: ArticleItem[]; repeated: 
   const kept: ArticleItem[] = [];
   let repeated = 0;
   for (const item of [...items].sort((a, b) => a.index - b.index)) {
-    if (seen.has(item.url)) {
+    const key = pageKey(item.url);
+    if (seen.has(key)) {
       repeated++;
       continue;
     }
-    seen.add(item.url);
+    seen.add(key);
     kept.push(item);
   }
   return { kept, repeated };

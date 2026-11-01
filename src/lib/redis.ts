@@ -1,4 +1,5 @@
 import { Redis } from '@upstash/redis';
+import { pageKey } from '@/lib/url-key';
 
 if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
   console.warn('Upstash Redis environment variables are missing. Caching will be disabled.');
@@ -11,16 +12,10 @@ export const redis = new Redis({
 
 /**
  * Normalizes a URL to be used as a cache key.
- * Removes fragments and trailing slashes.
+ * Same page identity as the queue: tracking parameters do not make a new page.
  */
 export function normalizeUrlForCache(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.hash = ''; // Remove fragment
-    return parsed.toString().replace(/\/$/, ''); // Remove trailing slash
-  } catch {
-    return url.replace(/\/$/, '');
-  }
+  return pageKey(url);
 }
 
 /**

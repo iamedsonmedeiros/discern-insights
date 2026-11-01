@@ -4,6 +4,8 @@
 // and a repeated address enters once. Every other row is counted so the article
 // can say how many results were collected and how many were actually screened.
 
+import { pageKey } from "@/lib/url-key";
+
 export type SearchHit = {
   url: string;
   page: number | null;
@@ -156,8 +158,9 @@ export function parseSearchRows(rows: string[][]): (SearchImport & { hits: Searc
           position: Number.isFinite(position) && position > 0 ? position : null,
           positionOnPage: Number.isFinite(onPage) && onPage > 0 ? onPage : null,
         });
-        if (!seen.has(url)) {
-          seen.add(url);
+        const key = pageKey(url);
+        if (!seen.has(key)) {
+          seen.add(key);
           urls.push(url);
         }
       }

@@ -39,6 +39,14 @@ assert(sentence.includes("youtube") === false, "sentence must not list excluded 
 assert(sentence.includes("visão geral de IA"), sentence);
 assert(sentence.includes("vídeo"), sentence);
 
+const tracked = parseSearchCsv([
+  "termo;pagina;tipo;url",
+  "x;1;organico;https://www.exemplo.com/a?srsltid=1",
+  "x;1;organico;https://www.exemplo.com/a?srsltid=2",
+].join("\n"));
+assert(tracked!.hits.length === 2, "both positions stay");
+assert(tracked!.uniqueOrganic === 1, "tracking param is the same page");
+
 const xlsxPath = "/Users/edsonmedeiros/Downloads/Cópia de busca-google-cancer-de-pele-20261026-1824.xlsx";
 try {
   const XLSX = require("xlsx") as typeof import("xlsx");
@@ -50,7 +58,7 @@ try {
   assert(real, "xlsx recognized");
   assert(real!.rows === 153, `xlsx rows ${real!.rows}`);
   assert(real!.organicRows === 147, `xlsx organic ${real!.organicRows}`);
-  assert(real!.uniqueOrganic === 86, `xlsx unique ${real!.uniqueOrganic}`);
+  assert(real!.uniqueOrganic === 73, `xlsx unique ${real!.uniqueOrganic}`);
   assert(real!.hits.length === 147, `xlsx hits ${real!.hits.length}`);
   assert(real!.hits[0].position === 4, `first position ${real!.hits[0].position}`);
   assert(real!.hits[0].page === 1, "first hit is page 1");
@@ -62,7 +70,7 @@ try {
   assert(real!.urls.some((url) => url.includes("facebook.com")), "organic facebook kept for later eligibility");
   const realSentence = describeSearchImports([real!], "pt-BR");
   assert(realSentence.includes("2 blocos"), realSentence);
-  assert(realSentence.includes("86 endereços únicos"), realSentence);
+  assert(realSentence.includes("73 endereços únicos"), realSentence);
   console.log(realSentence);
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code === "ENOENT") console.log("xlsx check skipped: file not found");

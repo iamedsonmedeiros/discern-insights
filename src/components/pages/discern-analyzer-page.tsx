@@ -10,6 +10,7 @@ import { toArticleItem } from "@/lib/article-data";
 import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
 import { MIN_TEXT_LENGTH } from "@/lib/eligibility";
 import { textFromPdfBytes } from "@/lib/pdf-text";
+import { pageKey } from "@/lib/url-key";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
 import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
@@ -288,7 +289,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
 
     const source = ordered.find(
       (item) =>
-        item.url === nextItem.url &&
+        pageKey(item.url) === pageKey(nextItem.url) &&
         item.index < nextItem.index &&
         item.status !== "pending" &&
         item.status !== "processing"
