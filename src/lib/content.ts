@@ -33,6 +33,21 @@ const JINA_TARGET_ERROR = /^Warning: Target URL returned error (\d{3})/m;
 const BLOCKED_PAGE =
   /verify you are human|estabelecendo uma conexão segura|verifique se você é humano|bot verification|security check|request id|access denied|acesso negado|403 forbidden|you don't have permission to access/i;
 
+// Jina returns this instead of the article when Cloudflare shows the check page.
+// The older phrases miss "Performing security verification" and "verifies you are not a bot".
+const CHALLENGE_PAGE =
+  /this page maybe requiring captcha|performing security verification|verifies you are not a bot|just a moment\.\.\.|attention required! \| cloudflare|enable javascript and cookies to continue/i;
+
+const CHALLENGE_REASON =
+  "A página retornou uma verificação de segurança (Bot Protection). Faça a análise manual dessa página.";
+
+/** A challenge interstitial, not an article. A long page that merely mentions Cloudflare is left alone. */
+function isChallengePage(text: string): boolean {
+  if (/this page maybe requiring captcha/i.test(text)) return true;
+  if (text.length >= 8000) return false;
+  return CHALLENGE_PAGE.test(text) || BLOCKED_PAGE.test(text);
+}
+
 /**
  * Rejects text that must never become a snapshot: upstream error pages and
  * pages too short to be an article. Applied to fresh scrapes AND cache hits, so
@@ -43,6 +58,7 @@ function rejectUnusableText(text: string): string | null {
   if (targetError) {
     return `O site bloqueou a extração (HTTP ${targetError[1]}). Faça a análise manual desta página.`;
   }
+  if (isChallengePage(text)) return CHALLENGE_REASON;
   if (text.length < MIN_TEXT_LENGTH) {
     return `Conteúdo extraído insuficiente (${text.length} caracteres). A página provavelmente retornou erro ou bloqueio. Faça a análise manual desta página.`;
   }
@@ -248,16 +264,8 @@ export async function extractContent(url: string): Promise<ExtractionResult> {
       html = await response.text();
     }
 
-    // Check for security verification pages (e.g. Cloudflare, generic protection)
-    const isSecurityPage = BLOCKED_PAGE.test(html);
-    if (isSecurityPage && html.length < 10000) {
-      return {
-        ok: false,
-        status: "scraping_error",
-        reason:
-          "A página retornou uma verificação de segurança (Bot Protection). Faça a análise manual dessa página.",
-        meta,
-      };
+    if (isChallengePage(html)) {
+      return { ok: false, status: "scraping_error", reason: CHALLENGE_REASON, meta };
     }
     meta.size = html.length;
 
