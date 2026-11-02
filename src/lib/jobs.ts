@@ -184,6 +184,21 @@ export const RECONCILE_DELAY_SECONDS = 240;
 const MISSING_MODEL_ERROR =
   "O modelo não respondeu a tempo. A nota ficou com os modelos que concluíram.";
 
+const GEMINI_BILLING_REASON =
+  "Os créditos do Gemini acabaram, então esta página não foi analisada. Recarregue os créditos no AI Studio e tente de novo.";
+
+/** What the row and the toast should say when no model produced a score. */
+function panelFailureReason(rows: { error?: string | null }[]): string {
+  const errors = rows.map((row) => row.error ?? "").filter(Boolean);
+  if (errors.some((error) => /402|prepayment credits are depleted|payment required/i.test(error))) {
+    return GEMINI_BILLING_REASON;
+  }
+  if (errors.some((error) => /não respondeu a tempo/i.test(error))) {
+    return "O modelo não respondeu a tempo.";
+  }
+  return "Nenhum modelo do painel conseguiu analisar esta página.";
+}
+
 /**
  * Closes an item from the model rows already stored. A manual rescore of a page
  * that already counted as a failure swaps that failure for a success, so the
@@ -201,7 +216,7 @@ export async function finalizeReportedModels(jobId: string, itemId: string) {
 
   const { data: rows } = await supabase
     .from("analysis_model_results")
-    .select("model_id, status, scores, result")
+    .select("model_id, status, scores, result, error")
     .eq("item_id", itemId);
 
   const succeeded = (rows ?? []).filter((row) => row.status === "done" && row.scores);
@@ -228,7 +243,7 @@ export async function finalizeReportedModels(jobId: string, itemId: string) {
     .from("analysis_items")
     .update({
       status: isCompleted ? "completed" : "analysis_error",
-      reason: isCompleted ? null : "Every model in the panel failed to analyze this page.",
+      reason: isCompleted ? null : panelFailureReason(rows ?? []),
       discern_result: (primary?.result as PerformDiscernAnalysisOutput) ?? null,
       consensus: consensus ?? null,
       divergence_flag: consensus?.divergenceFlag ?? false,

@@ -4,17 +4,17 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { FileUp, Link as LinkIcon, Loader2, Play, Pause, SkipForward, FileText, BookMarked, Bell, Square, Edit, LogOut, Send, CheckCircle2, Users2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook, fetchActiveJob, fetchJobProgress, expandJobPanel, type JobProgress } from "@/app/actions";
+import { processUrl, generateArticleAction, startManualAnalysis, fetchAnalysisItems, fetchJobItemStatuses, upsertAnalysisItem, clearAnalysisQueue, saveImportedUrls, resetAnalysisQueue, resetProcessingStatus, fetchAvailableModels, fetchModelResults, parseSearchWorkbook, fetchActiveJob, fetchJobProgress, expandJobPanel, type JobProgress } from "@/app/actions";
 import { logout } from "../../app/(auth)/actions";
 import { toArticleItem } from "@/lib/article-data";
 import { clearSearchImports, loadSearchImports, parseSearchCsv, rememberSearchImport, type SearchImport } from "@/lib/search-import";
 import { MIN_TEXT_LENGTH } from "@/lib/eligibility";
 import { textFromPdfBytes } from "@/lib/pdf-text";
 import { pageKey } from "@/lib/url-key";
+import { jobCode } from "@/lib/job-code";
 import { exportCsv, exportJson, exportDocx, extractUrlsFromString, saveDocxFromContent, exportScoreSheetCsv, exportConsensusCsv, cn } from "@/lib/utils";
 import { ReliabilityCard } from "@/components/app/reliability-card";
 import type { AnalysisItem, PerformDiscernAnalysisOutput } from "@/lib/types";
-import { supabase } from "@/lib/supabase";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -74,6 +74,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
   const [backgroundJobId, setBackgroundJobId] = useState<string | null>(null);
   const [backgroundJobStatus, setBackgroundJobStatus] = useState<string | null>(null);
   const [backgroundProgress, setBackgroundProgress] = useState<{ completed: number; failed: number; total: number } | null>(null);
+  const finishedNoticeRef = useRef<string | null>(null);
   const [viewedSession, setViewedSession] = useState<JobProgress | null>(null);
   const [expandingPanel, setExpandingPanel] = useState(false);
 
@@ -137,108 +138,65 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
     loadData();
   }, [t, initialJobId]);
 
-  // Supabase Realtime: subscribe to background job progress
+  const noteFinished = useCallback((jobId: string, status: string) => {
+    if (status !== "done" && status !== "failed") return;
+    if (finishedNoticeRef.current === jobId) return;
+    finishedNoticeRef.current = jobId;
+    if (status === "done") {
+      toast({ title: "✅ Análise concluída!", description: "Verifique seu email para o resumo." });
+    }
+  }, [toast]);
+
+  // The signed-in server session is what can read the rows. The browser
+  // realtime client has no session, so the queue is refreshed from here.
   useEffect(() => {
-    if (!backgroundJobId) return;
-
-    const supabaseClient = supabase;
-    const jobChannel = supabaseClient
-      .channel(`job-${backgroundJobId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "analysis_jobs",
-          filter: `id=eq.${backgroundJobId}`,
-        },
-        (payload: { new: any }) => {
-          const job = payload.new;
-          setBackgroundJobStatus(job.status);
-          setBackgroundProgress({
-            completed: job.completed_urls,
-            failed: job.failed_urls,
-            total: job.total_urls,
-          });
-          if (job.status === "done" || job.status === "failed") {
-            // Reload items to show full updated results upon completion
-            fetchAnalysisItems().then((updated) => {
-              if (updated.length > 0) setItems(updated);
-            });
-            if (job.status === "done") {
-              toast({ title: "✅ Análise concluída!", description: "Verifique seu email para o resumo." });
-            }
-          }
-        }
-      )
-      .subscribe();
-
-    // Also subscribe to item changes to show real-time progress in the list
-    const itemsChannel = supabaseClient
-      .channel(`items-${backgroundJobId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "analysis_items",
-          filter: `job_id=eq.${backgroundJobId}`,
-        },
-        (payload: { new: any }) => {
-          const updatedItem = payload.new;
-          setItems((prev) =>
-            prev.map((item) =>
-              item.id === updatedItem.id
-                ? {
-                    ...item,
-                    status: updatedItem.status,
-                    reason: updatedItem.reason,
-                    meta: updatedItem.meta,
-                    discernResult: updatedItem.discern_result,
-                    consensus: updatedItem.consensus,
-                    divergenceFlag: updatedItem.divergence_flag,
-                    divergentItems: updatedItem.divergent_items,
-                    panelIncomplete: updatedItem.panel_incomplete,
-                    modelsTotal: updatedItem.models_total,
-                    modelId: updatedItem.model_id,
-                    updatedAt: updatedItem.updated_at,
-                  }
-                : item
-            )
-          );
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabaseClient.removeChannel(jobChannel);
-      supabaseClient.removeChannel(itemsChannel);
-    };
-  }, [backgroundJobId, toast]);
-
-  // Polling fallback: fetch job progress every 3s when a background job is active
-  useEffect(() => {
-    if (!backgroundJobId || backgroundJobStatus !== 'processing') return;
+    if (!backgroundJobId || backgroundJobStatus !== "processing") return;
 
     let cancelled = false;
+    const jobId = backgroundJobId;
+
     const poll = async () => {
-      const data = await fetchJobProgress(backgroundJobId);
-      if (!data || cancelled) return;
+      const [data, rows] = await Promise.all([
+        fetchJobProgress(jobId),
+        fetchJobItemStatuses(jobId),
+      ]);
+      if (cancelled) return;
 
-      setBackgroundJobStatus(data.status);
-      setBackgroundProgress({
-        completed: data.completed,
-        failed: data.failed,
-        total: data.total,
-      });
-
-      if (data.status === 'done' || data.status === 'failed') {
-        const updated = await fetchAnalysisItems({ jobId: backgroundJobId });
-        if (!cancelled && updated.length > 0) setItems(updated);
-        if (data.status === 'done') {
-          toast({ title: '✅ Análise concluída!', description: 'Verifique seu email para o resumo.' });
-        }
+      if (rows.length > 0) {
+        setItems((prev) => {
+          const byId = new Map(rows.map((row) => [row.id, row]));
+          let changed = false;
+          const next = prev.map((item) => {
+            const row = byId.get(item.id);
+            if (!row || (row.status === item.status && row.updatedAt === item.updatedAt)) return item;
+            changed = true;
+            return {
+              ...item,
+              ...row,
+              contentSnapshot: item.contentSnapshot,
+              contentHash: item.contentHash,
+              extractionMethod: item.extractionMethod,
+            };
+          });
+          return changed ? next : prev;
+        });
       }
+
+      if (!data) return;
+      setBackgroundProgress({ completed: data.completed, failed: data.failed, total: data.total });
+      setViewedSession((prev) =>
+        prev && prev.id === jobId
+          ? { ...prev, status: data.status, completed: data.completed, failed: data.failed, total: data.total }
+          : prev
+      );
+
+      if (data.status !== "done" && data.status !== "failed") return;
+
+      const updated = await fetchAnalysisItems({ jobId });
+      if (cancelled) return;
+      if (updated.length > 0) setItems(updated);
+      setBackgroundJobStatus(data.status);
+      noteFinished(jobId, data.status);
     };
 
     poll();
@@ -247,7 +205,7 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
       cancelled = true;
       clearInterval(interval);
     };
-  }, [backgroundJobId, backgroundJobStatus, toast]);
+  }, [backgroundJobId, backgroundJobStatus, noteFinished]);
 
   useEffect(() => () => {
     if (manualPollRef.current != null) window.clearInterval(manualPollRef.current);
@@ -833,7 +791,20 @@ export function DiscernAnalyzerPage({ initialJobId, onClearJobId }: DiscernAnaly
           <div className="mb-6 flex items-start justify-between gap-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-blue-700">{t("history.viewing")}</p>
-              <h2 className="text-lg font-semibold text-slate-900">{viewedSession.keyword || t("history.untitled")}</h2>
+              <h2 className="text-lg font-semibold text-slate-900">
+                {viewedSession.keyword || t("history.untitled")}
+                <button
+                  type="button"
+                  className="ml-2 align-middle rounded border border-blue-200 bg-white px-1.5 py-0.5 font-mono text-xs font-medium text-slate-700"
+                  title={t("history.code", { code: jobCode(viewedSession.id) })}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(jobCode(viewedSession.id));
+                    toast({ title: t("history.codeCopied") });
+                  }}
+                >
+                  {jobCode(viewedSession.id)}
+                </button>
+              </h2>
               <p className="text-sm text-slate-600">
                 {viewedSession.createdAt
                   ? new Date(viewedSession.createdAt).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" })

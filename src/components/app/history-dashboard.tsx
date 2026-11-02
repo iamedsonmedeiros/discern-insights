@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Loader2, Trash2, Eye, Server, Layers, Calendar } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { jobCode } from "@/lib/job-code";
 
 interface HistoryDashboardProps {
   onViewJob: (jobId: string) => void;
@@ -100,6 +101,16 @@ export function HistoryDashboard({ onViewJob }: HistoryDashboardProps) {
                   <CardTitle className="text-base line-clamp-1">
                     {job.keyword || "Sem Nome"}
                   </CardTitle>
+                  <button
+                    type="button"
+                    className="font-mono text-xs text-slate-500 hover:text-slate-800"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(jobCode(job.id));
+                      toast({ title: "Código copiado." });
+                    }}
+                  >
+                    {jobCode(job.id)}
+                  </button>
                   <CardDescription className="text-xs flex items-center">
                     <Calendar className="mr-1 h-3 w-3" />
                     {format(new Date(job.created_at), "dd 'de' MMM, yyyy HH:mm", { locale: ptBR })}

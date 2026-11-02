@@ -52,27 +52,68 @@ export async function fetchAnalysisItems(options?: { jobId?: string, onlyUnassig
       return [];
     }
 
-    return (data || []).map(item => ({
-      id: item.id,
-      url: item.url,
-      index: item.index,
-      status: item.status as AnalysisStatus,
-      reason: item.reason,
-      meta: item.meta,
-      discernResult: item.discern_result,
-      updatedAt: item.updated_at,
-      jobId: item.job_id,
-      consensus: item.consensus,
-      divergenceFlag: item.divergence_flag,
-      divergentItems: item.divergent_items,
-      panelIncomplete: item.panel_incomplete,
-      modelsTotal: item.models_total,
-      modelId: item.model_id,
-    }));
+    return (data || []).map(mapAnalysisItem);
   } catch (e) {
     console.error("fetchAnalysisItems failed:", e);
     return [];
   }
+}
+
+/** Status and score of one job, without the page text. The queue polls this while a background run is open. */
+export async function fetchJobItemStatuses(jobId: string): Promise<AnalysisItem[]> {
+  try {
+    const { supabase, user } = await getAuthenticatedUser();
+    const { data, error } = await supabase
+      .from("analysis_items")
+      .select("id, url, index, status, reason, meta, discern_result, updated_at, job_id, consensus, divergence_flag, divergent_items, panel_incomplete, models_total, model_id")
+      .eq("user_id", user.id)
+      .eq("job_id", jobId)
+      .order("index", { ascending: true });
+    if (error) {
+      console.error("Error fetching job item statuses:", error);
+      return [];
+    }
+    return (data || []).map(mapAnalysisItem);
+  } catch (e) {
+    console.error("fetchJobItemStatuses failed:", e);
+    return [];
+  }
+}
+
+function mapAnalysisItem(item: {
+  id: string;
+  url: string;
+  index: number;
+  status: string;
+  reason: string | null;
+  meta: AnalysisItem["meta"];
+  discern_result: AnalysisItem["discernResult"];
+  updated_at: string;
+  job_id: string | null;
+  consensus: AnalysisItem["consensus"];
+  divergence_flag: boolean | null;
+  divergent_items: string[] | null;
+  panel_incomplete: boolean | null;
+  models_total: number | null;
+  model_id: string | null;
+}): AnalysisItem {
+  return {
+    id: item.id,
+    url: item.url,
+    index: item.index,
+    status: item.status as AnalysisStatus,
+    reason: item.reason ?? undefined,
+    meta: item.meta,
+    discernResult: item.discern_result,
+    updatedAt: item.updated_at,
+    jobId: item.job_id ?? undefined,
+    consensus: item.consensus ?? undefined,
+    divergenceFlag: item.divergence_flag ?? undefined,
+    divergentItems: item.divergent_items ?? undefined,
+    panelIncomplete: item.panel_incomplete ?? undefined,
+    modelsTotal: item.models_total ?? undefined,
+    modelId: item.model_id ?? undefined,
+  };
 }
 
 export type JobProgress = {
